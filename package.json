@@ -1,6 +1,6 @@
 {
   "name": "tool-esptoolpy",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A Python-based, open-source, platform-independent utility to communicate with the ROM bootloader in Espressif chips",
   "keywords": [
     "tools",
