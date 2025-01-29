@@ -11,8 +11,5 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/ticalian77/esptool/"
-  },
-  "dependencies": {
-    "intelhex": "^2.3.0"
   }
 }
