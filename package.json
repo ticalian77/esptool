@@ -13,6 +13,6 @@
     "url": "https://github.com/ticalian77/esptool/"
   },
   "dependencies": {
-    "intelhex": "^2.3.0"  // Dies ist ein Beispiel; die tatsächliche Versionsnummer kann variieren
+    "intelhex": "^2.3.0"
   }
 }
