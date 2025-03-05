@@ -46,6 +46,25 @@ Creating a virtual environment (venv) is a good practice. This is particularly h
 - When you're done using ``esptool.py``, deactivate the virtual environment: ``deactivate``. The environment can be reused by activating it again.
 - If you no longer need the virtual environment, you can remove it by deleting the ``esptoolenv`` directory.
 
+Binary Releases
+^^^^^^^^^^^^^^^^
+
+If you do not want to install Python and all the dependencies, you can use the pre-built binaries from the `GitHub Releases <https://github.com/espressif/esptool/releases>`_.
+
+Please note that the binaries might have some limitations:
+
+- The binaries might rely on some system libraries that are not available on all systems.
+- The binaries are available only for selected operating systems - currently macOS (x86_64, arm64), Linux (x86_64, armv7,aarch64) and Windows (x86_64).
+- The binaries might get reported as malware by your antivirus software.
+- The application is larger in size compared to the Python package installation, as it includes all dependencies.
+- The application has slower startup time compared to running the Python script directly.
+- The application cannot be imported as a Python module in other Python applications.
+
+.. note::
+
+   For Linux, the binaries are built using Ubuntu 22.04 as the base image. That means any version older than Ubuntu 22.04 (or any other distribution that uses ``glibc<2.35``) might not work.
+   For using on Ubuntu 20.04, please use the Python package installation or ``v4.*`` release.
+
 How to Update
 -------------
 
@@ -69,6 +88,8 @@ If updating directly is unavoidable, make sure you update to a compatible versio
 
    $ pip install "esptool<4"
 
+.. _shell-completion:
+
 Shell Completions
 -----------------
 
@@ -76,37 +97,67 @@ To activate autocompletion, you can manually add commands provided below to your
 or run them in your current terminal session for one-time activation.
 You will likely have to restart or re-login for the autocompletion to start working.
 
-Bash
-^^^^
+.. tabs::
 
-::
+   .. group-tab:: Bash
 
-   eval "$(register-python-argcomplete esptool.py espsecure.py espefuse.py)"
+      .. tabs::
 
-Zsh
-^^^
+         .. group-tab:: v5
 
-To activate completions in zsh, first make sure `compinit` is marked for
-autoload and run autoload:
+            .. code-block:: bash
 
-.. code-block:: bash
+               eval "$(_ESPTOOL_PY_COMPLETE=bash_source esptool.py espsecure.py espefuse.py)"
 
-   autoload -U compinit
-   compinit
+         .. group-tab:: v4
 
-Afterwards you can enable completions for esptool.py, espsecure.py and espefuse.py:
+            .. code-block:: bash
 
-::
+               eval "$(register-python-argcomplete esptool.py espsecure.py espefuse.py)"
 
-   eval "$(register-python-argcomplete esptool.py espsecure.py espefuse.py)"
+   .. group-tab:: Zsh
 
-Fish
-^^^^
+      To activate completions in zsh, first make sure `compinit` is marked for
+      autoload and run autoload:
 
-Not required to be in the config file, only run once
+      .. code-block:: bash
 
-::
+         autoload -U compinit
+         compinit
 
-   register-python-argcomplete --shell fish esptool.py espsecure.py espefuse.py >~/.config/fish/completions/esptool.py.fish
+      Afterwards you can enable completions for esptool.py, espsecure.py and espefuse.py:
+
+      .. tabs::
+
+         .. group-tab:: v5
+
+            .. code-block:: bash
+
+               eval "$(_ESPTOOL_PY_COMPLETE=zsh_source esptool.py espsecure.py espefuse.py)"
+
+         .. group-tab:: v4
+
+            .. code-block:: bash
+
+               eval "$(register-python-argcomplete esptool.py espsecure.py espefuse.py)"
+
+   .. group-tab:: Fish
+
+      .. tabs::
+
+         .. group-tab:: v5
+
+            .. code-block:: bash
+
+               _ESPTOOL_PY_COMPLETE=fish_source esptool.py espsecure.py espefuse.py | source
+
+         .. group-tab:: v4
+
+            Not required to be in the config file, only run once
+
+            .. code-block:: bash
+
+               register-python-argcomplete --shell fish esptool.py espsecure.py espefuse.py >~/.config/fish/completions/esptool.py.fish
+
 
 Other shells nor OS Windows are not supported.

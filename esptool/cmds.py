@@ -7,6 +7,7 @@ import hashlib
 import io
 import os
 import struct
+import sys
 import time
 import zlib
 import itertools
@@ -15,7 +16,7 @@ from intelhex import IntelHex
 from serial import SerialException
 from typing import BinaryIO
 
-from .bin_image import ELFFile, ImageSegment, LoadFirmwareImage
+from .bin_image import ELFFile, LoadFirmwareImage
 from .bin_image import (
     ESP8266ROMFirmwareImage,
     ESP8266V2FirmwareImage,
@@ -44,6 +45,7 @@ from .util import (
     get_file_size,
     hexify,
     pad_to,
+    sanitize_string,
 )
 
 DETECTED_FLASH_SIZES = {
@@ -101,7 +103,7 @@ def detect_chip(
         connect_attempts: Number of connection attempts before failing.
 
     Returns:
-        An instance of the detected chip class, initialized and ready for use.
+        An initialized instance of the detected chip class ready for use.
     """
     inst = None
     detect_port = ESPLoader(port, baud, trace_enabled=trace_enabled)
@@ -256,7 +258,7 @@ def dump_mem(
         output: Path to output file for binary data. If None, returns the data.
 
     Returns:
-        bytes | None: Memory dump as bytes if filename is None;
+        Memory dump as bytes if filename is None;
         otherwise, returns None after writing to file.
     """
     log.print(
@@ -428,14 +430,7 @@ def write_flash(
     flash_freq: str = "keep",
     flash_mode: str = "keep",
     flash_size: str = "keep",
-    erase_all: bool = False,
-    encrypt: bool = False,
-    encrypt_files: list[tuple[int, BinaryIO]] | None = None,
-    compress: bool = False,
-    no_compress: bool = False,
-    force: bool = False,
-    ignore_flash_encryption_efuse_setting: bool = False,
-    no_progress: bool = False,
+    **kwargs,
 ) -> None:
     """
     Write firmware or data to the SPI flash memory of an ESP device.
@@ -450,15 +445,29 @@ def write_flash(
             (``"keep"`` to retain current).
         flash_size: Flash size to set in the bootloader image header
             (``"keep"`` to retain current).
-        erase_all: Erase the entire flash before writing.
-        encrypt: Encrypt all files during flashing.
-        encrypt_files: List of (address, file) tuples for files to encrypt individually.
-        compress: Compress data before flashing.
-        no_compress: Don't compress data before flashing.
-        force: Ignore safety checks (e.g., secure boot, flash size).
-        ignore_flash_encryption_efuse_setting: Ignore flash encryption efuse settings.
-        no_progress: Disable progress updates.
+
+    Keyword Args:
+        erase_all (bool): Erase the entire flash before writing.
+        encrypt (bool): Encrypt all files during flashing.
+        encrypt_files (list[tuple[int, BinaryIO]] | None): List of (address, file)
+            tuples for files to encrypt individually.
+        compress (bool): Compress data before flashing.
+        no_compress (bool): Don't compress data before flashing.
+        force (bool): Ignore safety checks (e.g., overwriting bootloader, flash size).
+        ignore_flash_enc_efuse (bool): Ignore flash encryption eFuse settings.
+        no_progress (bool): Disable progress updates.
     """
+
+    # Set default values of optional arguments
+    erase_all: bool = kwargs.get("erase_all", False)
+    encrypt: bool = kwargs.get("encrypt", False)
+    encrypt_files: list[tuple[int, BinaryIO]] | None = kwargs.get("encrypt_files", None)
+    compress: bool = kwargs.get("compress", False)
+    no_compress: bool = kwargs.get("no_compress", False)
+    force: bool = kwargs.get("force", False)
+    ignore_flash_enc_efuse: bool = kwargs.get("ignore_flash_enc_efuse", False)
+    no_progress: bool = kwargs.get("no_progress", False)
+
     # set compress based on default behaviour:
     # -> if either "compress" or "no_compress" is set, honour that
     # -> otherwise, set "compress" unless the stub flasher is disabled
@@ -574,7 +583,7 @@ def write_flash(
 
                     do_write = False
 
-        if not do_write and not ignore_flash_encryption_efuse_setting:
+        if not do_write and not ignore_flash_enc_efuse:
             raise FatalError(
                 "Can't perform encrypted flash write, "
                 "consult Flash Encryption documentation for more information"
@@ -1230,7 +1239,7 @@ def read_flash_sfdp(esp: ESPLoader, address: int, bytes: int = 1) -> None:
     Args:
         esp: Initiated esp object connected to a real device.
         address: Starting address in the SFDP region to read from.
-        bytes: Number of bytes to read (1-4, default: 1).
+        bytes: Number of bytes to read (1-4).
     """
     if not (1 <= bytes <= 4):
         raise FatalError("Invalid number of bytes to read from SFDP (1-4).")
@@ -1269,7 +1278,7 @@ def read_flash(
         no_progress: Disable printing progress.
 
     Returns:
-        bytes | None: The read flash data as bytes if output is None; otherwise,
+        The read flash data as bytes if output is None; otherwise,
         returns None after writing to file.
     """
     _set_flash_parameters(esp, flash_size)
@@ -1547,6 +1556,52 @@ def reset_chip(esp: ESPLoader, reset_mode: str = "hard_reset") -> None:
         raise FatalError(f"Invalid reset mode: {reset_mode}")
 
 
+def run_stub(esp: ESPLoader) -> ESPLoader:
+    """
+    Load and execute the stub loader on the ESP device. If stub loading
+    is not supported or is explicitly disabled, warnings are logged.
+
+    Args:
+        esp: Initiated esp object connected to a real device.
+
+    Returns:
+        The esp instance, either as a stub child class in a state
+        where the stub has been executed, or in its original state
+        if the stub loader is disabled or unsupported.
+    """
+    if esp.secure_download_mode:
+        log.warning(
+            "Stub loader is not supported in Secure Download Mode, "
+            "it has been disabled. Set --no-stub to suppress this warning."
+        )
+    elif not esp.IS_STUB and esp.stub_is_disabled:
+        log.warning(
+            "Stub loader has been disabled for compatibility, "
+            "set --no-stub to suppress this warning."
+        )
+    elif esp.CHIP_NAME in [
+        "ESP32-H21",
+        "ESP32-H4",
+    ]:  # TODO: [ESP32H21] IDF-11509   [ESP32H4] IDF-12271
+        log.warning(
+            f"Stub loader is not yet supported on {esp.CHIP_NAME}, "
+            "it has been disabled. Set --no-stub to suppress this warning."
+        )
+    else:
+        try:
+            return esp.run_stub()
+        except Exception:
+            # The CH9102 bridge (PID: 0x55D4) can have issues on MacOS
+            if sys.platform == "darwin" and esp._get_pid() == 0x55D4:
+                log.print()
+                log.note(
+                    "If issues persist, "
+                    "try installing the WCH USB-to-Serial MacOS driver."
+                )
+            raise
+    return esp
+
+
 # Commands that don't require an ESP object (image manipulation, etc.)
 ######################################################################
 
@@ -1583,11 +1638,11 @@ def _parse_app_info(app_info_segment):
         "magic_word": magic_word,
         "secure_version": secure_version,
         "reserv1": reserv1,
-        "version": version.decode("utf-8"),
-        "project_name": project_name.decode("utf-8"),
-        "time": time.decode("utf-8"),
-        "date": date.decode("utf-8"),
-        "idf_ver": idf_ver.decode("utf-8"),
+        "version": sanitize_string(version),
+        "project_name": sanitize_string(project_name),
+        "time": sanitize_string(time),
+        "date": sanitize_string(date),
+        "idf_ver": sanitize_string(idf_ver),
         "app_elf_sha256": hexify(app_elf_sha256, uppercase=False),
         "min_efuse_blk_rev_full": (
             f"{min_efuse_blk_rev_full // 100}.{min_efuse_blk_rev_full % 100}"
@@ -1599,6 +1654,37 @@ def _parse_app_info(app_info_segment):
             f"{2**mmu_page_size // 1024} KB" if mmu_page_size != 0 else None
         ),
         "reserv3": reserv3,
+        "reserv2": reserv2,
+    }
+
+
+def _parse_bootloader_info(bootloader_info_segment):
+    """
+    Check if correct magic byte is present in the bootloader_info and parse
+    the bootloader_info struct
+    """
+    bootloader_info = bootloader_info_segment[:80]
+    # More info about the bootloader_info struct can be found at:
+    # https://docs.espressif.com/projects/esp-idf/en/latest/api-reference/system/bootloader_image_format.html#bootloader-description
+    BOOTLOADER_DESC_STRUCT_FMT = "<B" + "3s" + "I32s24s" + "16s"
+    (
+        magic_byte,
+        reserv1,
+        version,
+        idf_ver,
+        date_time,
+        reserv2,
+    ) = struct.unpack(BOOTLOADER_DESC_STRUCT_FMT, bootloader_info)
+
+    if magic_byte != 0x50:
+        return None
+
+    return {
+        "magic_byte": magic_byte,
+        "reserv1": reserv1,
+        "version": version,
+        "idf_ver": sanitize_string(idf_ver),
+        "date_time": sanitize_string(date_time),
         "reserv2": reserv2,
     }
 
@@ -1745,12 +1831,10 @@ def image_info(filename: str, chip: str = "auto") -> None:
             "Segment", "Length", "Load addr", "File offs", "Memory types"
         )
     )
-    log.print(
-        "{}  {}  {}  {}  {}".format("-" * 7, "-" * 7, "-" * 10, "-" * 10, "-" * 12)
-    )
+    log.print(f"{'-' * 7}  {'-' * 7}  {'-' * 10}  {'-' * 10}  {'-' * 12}")
     format_str = "{:7}  {:#07x}  {:#010x}  {:#010x}  {}"
     app_desc_seg = None
-    bootloader_desc = None
+    bootloader_desc_seg = None
     for idx, seg in enumerate(image.segments):
         segs = seg.get_memory_type(image)
         seg_name = ", ".join(segs)
@@ -1760,7 +1844,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
         elif "DRAM" in segs:
             # The DRAM segment starts with the esp_bootloader_desc_t struct
             if len(seg.data) >= 80:
-                bootloader_desc = seg.data[:80]
+                bootloader_desc_seg = seg.data
         log.print(
             format_str.format(idx, len(seg.data), seg.addr, seg.file_offs, seg_name)
         )
@@ -1815,72 +1899,16 @@ def image_info(filename: str, chip: str = "auto") -> None:
                 log.print(f"MMU page size: {app_desc['mmu_page_size']}")
             log.print(f"Secure version: {app_desc['secure_version']}")
 
-    elif bootloader_desc:
-        BOOTLOADER_DESC_STRUCT_FMT = "<B" + "3s" + "I32s24s" + "16s"
-        (
-            magic_byte,
-            reserved,
-            version,
-            idf_ver,
-            date_time,
-            reserved2,
-        ) = struct.unpack(BOOTLOADER_DESC_STRUCT_FMT, bootloader_desc)
-
-        if magic_byte == 80:
+    elif bootloader_desc_seg:
+        bootloader_desc = _parse_bootloader_info(bootloader_desc_seg)
+        if bootloader_desc:
             log.print()
             title = "Bootloader information"
             log.print(title)
             log.print("=" * len(title))
-            log.print(f"Bootloader version: {version}")
-            log.print(f"ESP-IDF: {idf_ver.decode('utf-8')}")
-            log.print(f"Compile time: {date_time.decode('utf-8')}")
-
-
-def make_image(
-    segfile: list[str],
-    segaddr: list[int],
-    output: str | None = None,
-    entrypoint: int = 0,
-) -> bytes | None:
-    """
-    Assemble an ESP8266 firmware image using binary segments. ESP8266-only.
-
-    Args:
-        segfile: List of file paths containing binary segment data.
-        segaddr: List of memory addresses corresponding to each segment.
-        output: Path to save the output firmware image file.
-            If None, the function returns the image as bytes.
-        entrypoint: Entry point address for the firmware.
-
-    Returns:
-        None if output is provided; otherwise, returns the assembled
-        firmware image as bytes.
-    """
-    log.print("Creating ESP8266 image...")
-    image = ESP8266ROMFirmwareImage()
-    if len(segfile) == 0:
-        raise FatalError("No segments specified")
-    if len(segfile) != len(segaddr):
-        raise FatalError(
-            "Number of specified files does not match the number of specified addresses"
-        )
-    for seg, addr in zip(segfile, segaddr):
-        with open(seg, "rb") as f:
-            data = f.read()
-            image.segments.append(ImageSegment(addr, data))
-    image.entrypoint = entrypoint
-    if output is not None:
-        # Save image to the provided file path.
-        image.save(output)
-        log.print("Successfully created ESP8266 image.")
-        return None
-    else:
-        # Save image to a BytesIO buffer and return the bytes.
-        buf = io.BytesIO()
-        image.save(buf)
-        result = buf.getvalue()
-        log.print("Successfully created ESP8266 image.")
-        return result
+            log.print(f"Bootloader version: {bootloader_desc['version']}")
+            log.print(f"ESP-IDF: {bootloader_desc['idf_ver']}")
+            log.print(f"Compile time: {bootloader_desc['date_time']}")
 
 
 def merge_bin(
@@ -1891,10 +1919,7 @@ def merge_bin(
     flash_mode: str = "keep",
     flash_size: str = "keep",
     format: str = "raw",
-    target_offset: int = 0,
-    fill_flash_size: str | None = None,
-    chunk_size: int | None = None,
-    md5_disable: bool = False,
+    **kwargs,
 ) -> None:
     """
     Merge multiple binary files into a single output file for flashing to an ESP device.
@@ -1915,11 +1940,20 @@ def merge_bin(
         flash_size: Flash size to set in the image header
             (``"keep"`` to retain current).
         format: Output format (``"raw"``, ``"uf2"``, or ``"hex"``).
-        target_offset: Starting offset for the merged output.
-        fill_flash_size: If specified, pad the output he given flash size.
-        chunk_size: Chunk size for UF2 format.
-        md5_disable: If True, disable MD5 checks in UF2 format.
+
+    Keyword Args:
+        target_offset (int): Starting offset for the merged output.
+        pad_to_size (str | None): If specified, pad the output to a specific flash size.
+        chunk_size (int | None): Chunk size for UF2 format.
+        md5_disable (bool): If True, disable MD5 checks in UF2 format.
     """
+
+    # Set default values of optional arguments
+    target_offset: int = kwargs.get("target_offset", 0)
+    pad_to_size: str | None = kwargs.get("pad_to_size", None)
+    chunk_size: int | None = kwargs.get("chunk_size", None)
+    md5_disable: bool = kwargs.get("md5_disable", False)
+
     try:
         chip_class = CHIP_DEFS[chip]
     except KeyError:
@@ -1976,8 +2010,8 @@ def merge_bin(
                     chip_class, addr, flash_freq, flash_mode, flash_size, image
                 )
                 of.write(image)
-            if fill_flash_size:
-                pad_to(flash_size_bytes(fill_flash_size))
+            if pad_to_size:
+                pad_to(flash_size_bytes(pad_to_size))
             log.print(
                 f"Wrote {of.tell():#x} bytes to file {output}, "
                 f"ready to flash to offset {target_offset:#x}"
@@ -2014,18 +2048,7 @@ def elf2image(
     flash_freq: str | None = None,
     flash_mode: str = "qio",
     flash_size: str = "1MB",
-    version: int = 1,
-    min_rev: int = 0,
-    min_rev_full: int = 0,
-    max_rev_full: int = 65535,
-    secure_pad: bool = False,
-    secure_pad_v2: bool = False,
-    elf_sha256_offset: int | None = None,
-    append_digest: bool = True,
-    use_segments: bool = False,
-    flash_mmu_page_size: str | None = None,
-    pad_to_size: str | None = None,
-    ram_only_header: bool = False,
+    **kwargs,
 ) -> None:
     """
     Convert an ELF file into a firmware image suitable for flashing onto an ESP device.
@@ -2037,19 +2060,36 @@ def elf2image(
         flash_freq: Flash frequency to set in the image header.
         flash_mode: Flash mode to set in the image header.
         flash_size: Flash size to set in the image header.
-        version: ESP8266 only, firmware image version.
-        min_rev: Minimum chip revision required.
-        min_rev_full: Minimum full revision required.
-        max_rev_full: Maximum full revision allowed.
-        secure_pad: Enable secure padding, ESP32-only.
-        secure_pad_v2: Enable version 2 secure padding.
-        elf_sha256_offset: Offset for storing the ELF file's SHA-256 hash.
-        append_digest: Whether to append a digest to the firmware image.
-        use_segments: Use ELF segments instead of sections.
-        flash_mmu_page_size: MMU page size for flash mapping.
-        pad_to_size: Pad the final image to a specific flash size.
-        ram_only_header: Image will only contain RAM segments and no SHA-256 digest.
+
+    Keyword Args:
+        version (int): ESP8266-only, firmware image version.
+        min_rev (int): Minimum chip revision required in legacy format.
+        min_rev_full (int): Minimum chip revision required in extended format.
+        max_rev_full (int): Maximum chip revision allowed in extended format.
+        secure_pad (bool): ESP32-only, enable secure padding.
+        secure_pad_v2 (bool): Enable version 2 secure padding.
+        elf_sha256_offset (int): Offset for storing the ELF file's SHA-256 hash.
+        append_digest (bool): Whether to append a digest to the firmware image.
+        use_segments (bool): Use ELF segments instead of sections.
+        flash_mmu_page_size (str): MMU page size for flash mapping.
+        pad_to_size (str): Pad the final image to a specific flash size.
+        ram_only_header (bool): Include only RAM segments and no SHA-256 hash.
     """
+
+    # Set default values of optional arguments
+    version: int = kwargs.get("version", 1)
+    min_rev: int = kwargs.get("min_rev", 0)
+    min_rev_full: int = kwargs.get("min_rev_full", 0)
+    max_rev_full: int = kwargs.get("max_rev_full", 65535)
+    secure_pad: bool = kwargs.get("secure_pad", False)
+    secure_pad_v2: bool = kwargs.get("secure_pad_v2", False)
+    elf_sha256_offset: int | None = kwargs.get("elf_sha256_offset", None)
+    append_digest: bool = kwargs.get("append_digest", True)
+    use_segments: bool = kwargs.get("use_segments", False)
+    flash_mmu_page_size: str | None = kwargs.get("flash_mmu_page_size", None)
+    pad_to_size: str | None = kwargs.get("pad_to_size", None)
+    ram_only_header: bool = kwargs.get("ram_only_header", False)
+
     e = ELFFile(input)
     if chip == "auto":  # Default to ESP8266 for backwards compatibility
         chip = "esp8266"

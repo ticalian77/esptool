@@ -369,7 +369,7 @@ class TestFlashEncryption(EsptoolTestCase):
             pytest.skip("Valid encryption key already programmed, aborting the test")
 
         self.run_esptool(
-            "write_flash --encrypt --ignore-flash-encryption-efuse-setting "
+            "write_flash --encrypt --ignore-flash-enc-efuse "
             "0x10000 images/ram_helloworld/helloworld-esp32.bin"
         )
         self.run_esptool("read_flash 0x10000 192 images/read_encrypted_flash.bin")
@@ -408,7 +408,7 @@ class TestFlashEncryption(EsptoolTestCase):
             pytest.skip("Valid encryption key already programmed, aborting the test")
 
         self.run_esptool(
-            "write_flash --encrypt --ignore-flash-encryption-efuse-setting "
+            "write_flash --encrypt --ignore-flash-enc-efuse "
             "0x10000 images/ram_helloworld/helloworld-esp32_edit.bin"
         )
         self.run_esptool("read_flash 0x10000 192 images/read_encrypted_flash.bin")
@@ -1531,39 +1531,6 @@ class TestReadWriteMemory(EsptoolTestCase):
             assert "Unknown Embedded PSRAM" not in features
         finally:
             esp._port.close()
-
-
-@pytest.mark.skipif(
-    arg_chip != "esp8266", reason="Make image option is supported only on ESP8266"
-)
-class TestMakeImage(EsptoolTestCase):
-    def verify_image(self, offset, length, image, compare_to):
-        with open(image, "rb") as f:
-            f.seek(offset)
-            rb = f.read(length)
-        with open(compare_to, "rb") as f:
-            ct = f.read()
-        if len(rb) != len(ct):
-            print(
-                f"WARNING: Expected length {len(ct)} doesn't match comparison {len(rb)}"
-            )
-        print(f"Readback {len(rb)} bytes")
-        self.diff(rb, ct)
-
-    def test_make_image(self):
-        output = self.run_esptool(
-            "make_image test"
-            " -a 0x0 -f images/sector.bin -a 0x1000 -f images/fifty_kb.bin"
-        )
-        try:
-            assert "Successfully created ESP8266 image." in output
-            assert os.path.exists("test0x00000.bin")
-            self.verify_image(16, 4096, "test0x00000.bin", "images/sector.bin")
-            self.verify_image(
-                4096 + 24, 50 * 1024, "test0x00000.bin", "images/fifty_kb.bin"
-            )
-        finally:
-            os.remove("test0x00000.bin")
 
 
 @pytest.mark.skipif(
