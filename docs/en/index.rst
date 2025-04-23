@@ -1,7 +1,8 @@
 Esptool.py Documentation
 ========================
 
-This is the documentation for ``esptool.py`` - a Python-based, open source, platform independent serial communication tool. Esptool communicates with the ROM bootloader (or flasher stub) in `Espressif SoCs <https://www.espressif.com/en/products/hardware/socs>`_.
+This is the documentation for ``esptool.py`` - a Python-based, open-source, platform-independent utility for flashing, provisioning, and interacting with Espressif SoCs. Esptool communicates with the ROM bootloader (or the flasher stub) in `Espressif SoCs <https://www.espressif.com/en/products/hardware/socs>`_.
+
 The flasher stub is a small program included with esptool that replaces the original ROM bootloader in the chip to fix some of its limitations and bugs. See :ref:`stub` for more details.
 
 ``esptool.py``, ``espefuse.py`` and ``espsecure.py`` are a complete toolset for working with Espressif chips. They can do a number of things, for example:
@@ -41,7 +42,7 @@ Getting started is easy:
 
     ::
 
-        $ esptool.py -p PORT flash_id
+        $ esptool.py -p PORT flash-id
 
     Replace ``PORT`` with the name of used serial port. If connection fails, see :ref:`troubleshooting`.
 

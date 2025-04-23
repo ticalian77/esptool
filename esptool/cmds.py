@@ -14,7 +14,7 @@ import itertools
 
 from intelhex import IntelHex
 from serial import SerialException
-from typing import BinaryIO
+from typing import cast
 
 from .bin_image import ELFFile, LoadFirmwareImage
 from .bin_image import (
@@ -42,8 +42,10 @@ from .util import (
 from .util import (
     div_roundup,
     flash_size_bytes,
-    get_file_size,
     hexify,
+    ImageSource,
+    get_bytes,
+    get_key_from_value,
     pad_to,
     sanitize_string,
 )
@@ -85,7 +87,7 @@ FLASH_MODES = {
 def detect_chip(
     port: str = ESPLoader.DEFAULT_PORT,
     baud: int = ESPLoader.ESP_ROM_BAUD,
-    connect_mode: str = "default_reset",
+    connect_mode: str = "default-reset",
     trace_enabled: bool = False,
     connect_attempts: int = DEFAULT_CONNECT_ATTEMPTS,
 ) -> ESPLoader:
@@ -97,8 +99,8 @@ def detect_chip(
         port: The serial port to use for communication.
         baud: The baud rate for serial communication.
         connect_mode: The chip reset method to perform when connecting to the ESP device
-            (``"default_reset"``, ``"usb_reset"``,
-            ``"no_reset"``, ``"no_reset_no_sync"``)
+            (``"default-reset"``, ``"usb-reset"``,
+            ``"no-reset"``, ``"no-reset-no-sync"``)
         trace_enabled: Enables or disables tracing for debugging purposes.
         connect_attempts: Number of connection attempts before failing.
 
@@ -119,17 +121,17 @@ def detect_chip(
         return instance
 
     """
-    First, get_security_info command is sent to detect the ID of the chip
+    First, get-security-info command is sent to detect the ID of the chip
     (supported only by ESP32-C3 and later, works even in the Secure Download Mode).
     If this fails, we reconnect and fall-back to reading the magic number.
     It's mapped at a specific ROM address and has a different value on each chip model.
     This way we use one memory read and compare it to the magic number for each chip.
     """
     try:
-        log.print("Detecting chip type...", end="")
+        log.print("Detecting chip type...", end="", flush=True)
         chip_id = detect_port.get_chip_id()
         for cls in ROM_LIST:
-            # cmd not supported on ESP8266 and ESP32 + ESP32-S2 doesn't return chip_id
+            # cmd not supported on ESP8266 and ESP32 + ESP32-S2 doesn't return chip-id
             if cls.USES_MAGIC_VALUE:
                 continue
             if chip_id == cls.IMAGE_CHIP_ID:
@@ -145,39 +147,41 @@ def detect_chip(
                 break
         else:
             err_msg = f"Unexpected chip ID value {chip_id}."
-    except (UnsupportedCommandError, struct.error, FatalError) as e:
+    except (UnsupportedCommandError, struct.error, FatalError):
         # UnsupportedCommandError: ESP8266/ESP32 ROM
         # struct.error: ESP32-S2
         # FatalError: ESP8266/ESP32 STUB
-        log.print(" Unsupported detection protocol, switching and trying again...")
         try:
-            # ESP32/ESP8266 are reset after an unsupported command, need to reconnect
-            # (not needed on ESP32-S2)
-            if not isinstance(e, struct.error):
-                detect_port.connect(
-                    connect_mode, connect_attempts, detecting=True, warnings=False
-                )
-            log.print("Detecting chip type...", end="", flush=True)
             chip_magic_value = detect_port.read_reg(
                 ESPLoader.CHIP_DETECT_MAGIC_REG_ADDR
             )
-
-            for cls in ROM_LIST:
-                if not cls.USES_MAGIC_VALUE:
-                    continue
-                if chip_magic_value == cls.MAGIC_VALUE:
-                    inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
-                    inst = check_if_stub(inst)
-                    inst._post_connect()
-                    break
-            else:
-                err_msg = f"Unexpected chip magic value {chip_magic_value:#010x}."
         except UnsupportedCommandError:
             raise FatalError(
                 "Unsupported Command Error received. "
                 "Probably this means Secure Download Mode is enabled, "
                 "autodetection will not work. Need to manually specify the chip."
             )
+        except FatalError:
+            log.print(" Autodetection failed, trying again...")
+            detect_port.connect(
+                connect_mode, connect_attempts, detecting=True, warnings=False
+            )
+            log.print("Detecting chip type...", end="", flush=True)
+            chip_magic_value = detect_port.read_reg(
+                ESPLoader.CHIP_DETECT_MAGIC_REG_ADDR
+            )
+
+        for cls in ROM_LIST:
+            if not cls.USES_MAGIC_VALUE:
+                continue
+            if chip_magic_value == cls.MAGIC_VALUE:
+                inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
+                inst = check_if_stub(inst)
+                inst._post_connect()
+                break
+        else:
+            err_msg = f"Unexpected chip magic value {chip_magic_value:#010x}."
+
     if inst is not None:
         return inst
 
@@ -191,32 +195,43 @@ def detect_chip(
 #####################################
 
 
-def load_ram(esp: ESPLoader, filename: str) -> None:
+def load_ram(esp: ESPLoader, input: ImageSource) -> None:
     """
     Load a firmware image into RAM and execute it on the ESP device.
 
     Args:
         esp: Initiated esp object connected to a real device.
-        filename: Path to the firmware image file.
+        input: Path to the firmware image file, opened file-like object,
+            or the image data as bytes.
     """
-    image = LoadFirmwareImage(esp.CHIP_NAME, filename)
+    data, source = get_bytes(input)
+    image = LoadFirmwareImage(esp.CHIP_NAME, data)
 
-    log.print("RAM boot...")
-    for seg in image.segments:
+    log.stage()
+    source = "image" if source is None else f"'{source}'"
+    log.print(f"Loading {source} to RAM...")
+    for i, seg in enumerate(image.segments, start=1):
         size = len(seg.data)
-        log.print(f"Downloading {size} bytes at {seg.addr:08x}...", end=" ", flush=True)
+        log.progress_bar(
+            cur_iter=i,
+            total_iters=len(image.segments),
+            prefix=f"Downloading {size} bytes at {seg.addr:#010x} ",
+            suffix="...",
+        )
+
         esp.mem_begin(
             size, div_roundup(size, esp.ESP_RAM_BLOCK), esp.ESP_RAM_BLOCK, seg.addr
         )
-
         seq = 0
         while len(seg.data) > 0:
             esp.mem_block(seg.data[0 : esp.ESP_RAM_BLOCK], seq)
             seg.data = seg.data[esp.ESP_RAM_BLOCK :]
             seq += 1
-        log.print("done!")
-
-    log.print(f"All segments done, executing at {image.entrypoint:08x}")
+    log.stage(finish=True)
+    log.print(
+        f"Loaded {len(image.segments)} segments from {source} to RAM, "
+        f"executing at {image.entrypoint:#010x}."
+    )
     esp.mem_finish(image.entrypoint)
 
 
@@ -242,7 +257,7 @@ def write_mem(esp: ESPLoader, address: int, value: int, mask: int = 0xFFFFFFFF) 
         mask: Bitmask specifying which bits to modify (default: all bits).
     """
     esp.write_reg(address, value, mask, 0)
-    log.print(f"Wrote {value:#010x}, mask {mask:#010x} to {address:#010x}")
+    log.print(f"Wrote {value:#010x} with mask {mask:#010x} to {address:#010x}.")
 
 
 def dump_mem(
@@ -258,36 +273,44 @@ def dump_mem(
         output: Path to output file for binary data. If None, returns the data.
 
     Returns:
-        Memory dump as bytes if filename is None;
+        Memory dump as bytes if output is None;
         otherwise, returns None after writing to file.
     """
+    data = io.BytesIO()  # Use BytesIO to store the memory dump
+    log.stage()
     log.print(
         f"Dumping {size} bytes from {address:#010x}"
         + (f" to file '{output}'..." if output else "...")
     )
-    data = bytearray()
-    log.set_progress(0)
-
+    t = time.time()
     # Read the memory in 4-byte chunks.
     for i in range(size // 4):
-        d = esp.read_reg(address + (i * 4))
-        data.extend(struct.pack("<I", d))
+        cur_addr = address + (i * 4)
+        d = esp.read_reg(cur_addr)
+        data.write(struct.pack("<I", d))  # Write 4 bytes to BytesIO
         # Update progress every 1024 bytes.
-        if len(data) % 1024 == 0:
-            percent = len(data) * 100 // size
-            log.set_progress(percent)
-            log.print_overwrite(f"{len(data)} bytes read... ({percent}%)")
-
-    log.print_overwrite(f"Successfully read {len(data)} bytes.", last_line=True)
-
+        cur = data.tell()
+        if cur % 1024 == 0 or cur == size:
+            log.progress_bar(
+                cur_iter=data.tell(),
+                total_iters=size,
+                prefix=f"Dumping from {cur_addr:#010x} ",
+                suffix=f" {cur}/{size} bytes...",
+            )
+    t = time.time() - t
+    speed_msg = " ({:.1f} kbit/s)".format(data.tell() / t * 8 / 1000) if t > 0.0 else ""
+    dest_msg = f" to '{output}'" if output else ""
+    log.stage(finish=True)
+    log.print(
+        f"Dumped {data.tell()} bytes from {address:#010x} in {t:.1f} seconds"
+        f"{speed_msg}{dest_msg}."
+    )
     if output:
         with open(output, "wb") as f:
-            f.write(data)
-        log.print(f"Memory dump to '{output}' completed.")
+            f.write(data.getvalue())
         return None
     else:
-        log.print("Memory dump completed.")
-        return bytes(data)
+        return data.getvalue()
 
 
 def detect_flash_size(esp: ESPLoader) -> str | None:
@@ -383,7 +406,9 @@ def _update_image_flash_params(esp, address, flash_freq, flash_mode, flash_size,
 
     flash_params = struct.pack(b"BB", img_flash_mode, img_flash_size + img_flash_freq)
     if flash_params != image[2:4]:
-        log.print(f"Flash params set to {struct.unpack('>H', flash_params)[0]:#06x}")
+        log.print(
+            f"Flash parameters set to {struct.unpack('>H', flash_params)[0]:#06x}."
+        )
         image = image[0:2] + flash_params + image[4:]
 
     # recalculate the SHA digest if it was appended
@@ -413,7 +438,7 @@ def _update_image_flash_params(esp, address, flash_freq, flash_mode, flash_size,
         ]
 
         if hexify(sha_digest_calculated) == hexify(image_stored_sha):
-            log.print("SHA digest in image updated")
+            log.print("SHA digest in image updated.")
         else:
             log.warning(
                 "SHA recalculation for binary failed!\n"
@@ -426,7 +451,7 @@ def _update_image_flash_params(esp, address, flash_freq, flash_mode, flash_size,
 
 def write_flash(
     esp: ESPLoader,
-    addr_filename: list[tuple[int, BinaryIO]],
+    addr_data: list[tuple[int, ImageSource]],
     flash_freq: str = "keep",
     flash_mode: str = "keep",
     flash_size: str = "keep",
@@ -437,8 +462,9 @@ def write_flash(
 
     Args:
         esp: Initiated esp object connected to a real device.
-        addr_filename: List of (address, file) tuples specifying where
-            to write each file in flash memory.
+        addr_data: List of (address, data) tuples specifying where
+            to write each file or data in flash memory. The data can be
+            a file path (str), bytes, or a file-like object.
         flash_freq: Flash frequency to set in the bootloader image header
             (``"keep"`` to retain current).
         flash_mode: Flash mode to set in the bootloader image header
@@ -449,19 +475,23 @@ def write_flash(
     Keyword Args:
         erase_all (bool): Erase the entire flash before writing.
         encrypt (bool): Encrypt all files during flashing.
-        encrypt_files (list[tuple[int, BinaryIO]] | None): List of (address, file)
-            tuples for files to encrypt individually.
+        encrypt_files (list[tuple[int, ImageSource]] | None): List of
+            (address, data) tuples for files to encrypt individually.
         compress (bool): Compress data before flashing.
         no_compress (bool): Don't compress data before flashing.
         force (bool): Ignore safety checks (e.g., overwriting bootloader, flash size).
         ignore_flash_enc_efuse (bool): Ignore flash encryption eFuse settings.
         no_progress (bool): Disable progress updates.
     """
+    # Normalize addr_data to use bytes
+    norm_addr_data = [(addr, get_bytes(data)) for addr, data in addr_data]
 
     # Set default values of optional arguments
     erase_all: bool = kwargs.get("erase_all", False)
     encrypt: bool = kwargs.get("encrypt", False)
-    encrypt_files: list[tuple[int, BinaryIO]] | None = kwargs.get("encrypt_files", None)
+    encrypt_files: list[tuple[int, ImageSource]] | None = kwargs.get(
+        "encrypt_files", None
+    )
     compress: bool = kwargs.get("compress", False)
     no_compress: bool = kwargs.get("no_compress", False)
     force: bool = kwargs.get("force", False)
@@ -477,7 +507,7 @@ def write_flash(
     if not force and esp.CHIP_NAME != "ESP8266" and not esp.secure_download_mode:
         # Check if secure boot is active
         if esp.get_secure_boot_enabled():
-            for address, _ in addr_filename:
+            for address, _ in norm_addr_data:
                 if address < 0x8000:
                     raise FatalError(
                         "Secure Boot detected, writing to flash regions < 0x8000 "
@@ -486,16 +516,17 @@ def write_flash(
                         "please use with caution, otherwise it may brick your device!"
                     )
         # Check if chip_id and min_rev in image are valid for the target in use
-        for _, argfile in addr_filename:
+        for _, (data, name) in norm_addr_data:
             try:
-                image = LoadFirmwareImage(esp.CHIP_NAME, argfile)
+                image = LoadFirmwareImage(esp.CHIP_NAME, data)
             except (FatalError, struct.error, RuntimeError):
                 continue
-            finally:
-                argfile.seek(0)  # LoadFirmwareImage changes the file handle position
             if image.chip_id != esp.IMAGE_CHIP_ID:
+                msg = (
+                    "Input does not contain" if name is None else f"'{name}' is not an"
+                )
                 raise FatalError(
-                    f"{argfile.name} is not an {esp.CHIP_NAME} image. "
+                    f"{msg} an {esp.CHIP_NAME} image. "
                     "Use the force argument to flash anyway."
                 )
 
@@ -514,7 +545,7 @@ def write_flash(
             if use_rev_full_fields:
                 rev = esp.get_chip_revision()
                 if rev < image.min_rev_full or rev > image.max_rev_full:
-                    error_str = f"{argfile.name} requires chip revision in range "
+                    error_str = f"'{name}' requires chip revision in range "
                     error_str += (
                         f"[v{image.min_rev_full // 100}.{image.min_rev_full % 100} - "
                     )
@@ -538,7 +569,7 @@ def write_flash(
                     rev = esp.get_major_chip_version()
                 if rev < image.min_rev:
                     raise FatalError(
-                        f"{argfile.name} requires chip revision "
+                        f"'{name}' requires chip revision "
                         f"{image.min_rev} or higher (this chip is revision {rev}). "
                         "Use the force argument to flash anyway."
                     )
@@ -566,27 +597,31 @@ def write_flash(
             enc_key_valid = esp.is_flash_encryption_key_valid()
 
             if not enc_key_valid:
-                log.print("Flash encryption key is not programmed")
+                log.print("Flash encryption key is not programmed.")
                 do_write = False
 
         # Determine which files list contain the ones to encrypt
-        files_to_encrypt = addr_filename if encrypt else encrypt_files
+        files_to_encrypt = (
+            norm_addr_data
+            if encrypt is not None
+            else [(addr, get_bytes(data)) for addr, data in encrypt_files]
+        )
 
         if files_to_encrypt is not None:
-            for address, argfile in files_to_encrypt:
+            for address, (data, name) in files_to_encrypt:
                 if address % esp.FLASH_ENCRYPTED_WRITE_ALIGN:
-                    log.print(
-                        f"File {argfile.name} address {address:#x} is not "
+                    source = "Input image" if name is None else f"'{name}'"
+                    log.warning(
+                        f"{source} (address {address:#x}) is not "
                         f"{esp.FLASH_ENCRYPTED_WRITE_ALIGN} byte aligned, "
-                        "can't flash encrypted"
+                        "can't flash encrypted."
                     )
-
                     do_write = False
 
         if not do_write and not ignore_flash_enc_efuse:
             raise FatalError(
                 "Can't perform encrypted flash write, "
-                "consult Flash Encryption documentation for more information"
+                "consult Flash Encryption documentation for more information."
             )
     else:
         if not force and esp.CHIP_NAME != "ESP8266":
@@ -634,23 +669,20 @@ def write_flash(
     # Verify file sizes fit in the set flash_size, or real flash size if smaller
     flash_end = min(set_flash_size, flash_end) if set_flash_size else flash_end
     if flash_end is not None:
-        for address, argfile in addr_filename:
-            argfile.seek(0, os.SEEK_END)
-            if address + argfile.tell() > flash_end:
+        for address, (data, name) in norm_addr_data:
+            if address + len(data) > flash_end:
+                source = "Input image" if name is None else f"File '{name}'"
                 raise FatalError(
-                    f"File {argfile.name} (length {argfile.tell()}) at offset "
-                    f"{address} will not fit in {flash_end} bytes of flash. "
-                    "Change the flash_size argument, or flashing address."
+                    f"{source} (length {len(data)}) at offset "
+                    f"{address:#010x} will not fit in {flash_end} bytes of flash. "
+                    "Change the flash_size argument or flashing address."
                 )
-            argfile.seek(0)
 
     if erase_all:
         erase_flash(esp)
     else:
-        for address, argfile in addr_filename:
-            argfile.seek(0, os.SEEK_END)
-            write_end = address + argfile.tell()
-            argfile.seek(0)
+        for address, (data, _) in norm_addr_data:
+            write_end = address + len(data)
             bytes_over = address % esp.FLASH_SECTOR_SIZE
             if bytes_over != 0:
                 log.note(
@@ -673,15 +705,15 @@ def write_flash(
     Each entry holds an "encrypt" flag marking whether the file needs encryption or not.
     This list needs to be sorted.
 
-    First, append to each entry of our addr_filename list the flag "encrypt"
-    E.g., if addr_filename is [(0x1000, "partition.bin"), (0x8000, "bootloader")],
+    First, append to each entry of our addr_data list the flag "encrypt"
+    E.g., if addr_data is [(0x1000, "partition.bin"), (0x8000, "bootloader")],
     all_files will be [
-        (0x1000, "partition.bin", encrypt),
-        (0x8000, "bootloader", encrypt)
+        (0x1000, data, "partition.bin", encrypt),
+        (0x8000, data, "bootloader", encrypt)
         ],
     where, of course, encrypt is either True or False
     """
-    all_files = [(offs, filename, encrypt) for (offs, filename) in addr_filename]
+    all_files = [(addr, data, name, encrypt) for (addr, (data, name)) in norm_addr_data]
 
     """
     Now do the same with encrypt_files list, if defined.
@@ -689,7 +721,7 @@ def write_flash(
     """
     if encrypt_files is not None:
         encrypted_files_flag = [
-            (offs, filename, True) for (offs, filename) in encrypt_files
+            (addr, *get_bytes(data), True) for (addr, data) in encrypt_files
         ]
 
         # Concatenate both lists and sort them.
@@ -698,20 +730,23 @@ def write_flash(
         # let's use sorted.
         all_files = sorted(all_files + encrypted_files_flag, key=lambda x: x[0])
 
-    for address, argfile, encrypted in all_files:
+    for address, data, name, encrypted in all_files:
         compress = compress
 
         # Check whether we can compress the current file before flashing
         if compress and encrypted:
+            source = "input bytes" if name is None else f"'{name}'"
             log.print("\n")
             log.warning("Compress and encrypt options are mutually exclusive.")
-            log.print(f"Will flash {argfile.name} uncompressed.")
+            log.print(f"Will flash {source} uncompressed.")
             compress = False
 
-        image = argfile.read()
+        image = data
 
         if len(image) == 0:
-            log.warning(f"File {argfile.name} is empty")
+            log.warning(
+                "Input bytes are empty." if name is None else f"'{name}' is empty."
+            )
             continue
 
         image = pad_to(image, esp.FLASH_ENCRYPTED_WRITE_ALIGN if encrypted else 4)
@@ -739,37 +774,36 @@ def write_flash(
         if compress:
             uncimage = image
             image = zlib.compress(uncimage, 9)
+            compsize = len(image)
         original_image = image  # Save the whole image in case retry is needed
         # Try again if reconnect was successful
+        log.stage()
         for attempt in range(1, esp.WRITE_FLASH_ATTEMPTS + 1):
             try:
                 if compress:
                     # Decompress the compressed binary a block at a time,
                     # to dynamically calculate the timeout based on the real write size
                     decompress = zlib.decompressobj()
-                    blocks = esp.flash_defl_begin(uncsize, len(image), address)
+                    esp.flash_defl_begin(uncsize, compsize, address)
                 else:
-                    blocks = esp.flash_begin(
-                        uncsize, address, begin_rom_encrypted=encrypted
-                    )
-                argfile.seek(0)  # in case we need it again
+                    esp.flash_begin(uncsize, address, begin_rom_encrypted=encrypted)
                 seq = 0
                 bytes_sent = 0  # bytes sent on wire
                 bytes_written = 0  # bytes written to flash
                 t = time.time()
 
                 timeout = DEFAULT_TIMEOUT
-
-                log.set_progress(0)
-
-                while len(image) > 0:
-                    percent = 100 * (seq + 1) // blocks
-                    log.set_progress(percent)
+                image_size = compsize if compress else uncsize
+                while len(image) >= 0:
                     if not no_progress:
-                        log.print_overwrite(
-                            f"Writing at {address + bytes_written:010x}... "
-                            f"({percent} %)"
+                        log.progress_bar(
+                            cur_iter=image_size - len(image),
+                            total_iters=image_size,
+                            prefix=f"Writing at {address + bytes_written:#010x} ",
+                            suffix=f" {bytes_sent}/{image_size} bytes...",
                         )
+                    if len(image) == 0:  # All data sent, print 100% progress and end
+                        break
                     block = image[0 : esp.FLASH_WRITE_SIZE]
                     if compress:
                         # feeding each compressed block into the decompressor lets us
@@ -836,28 +870,27 @@ def write_flash(
 
         t = time.time() - t
         speed_msg = ""
+        log.stage(finish=True)
         if compress:
             if t > 0.0:
-                speed_msg = f" (effective {uncsize / t * 8 / 1000:.1f} kbit/s)"
-            log.print_overwrite(
-                f"Wrote {uncsize} bytes ({bytes_sent} compressed) at {address:#010x} "
-                f"in {t:.1f} seconds{speed_msg}...",
-                last_line=True,
+                speed_msg = f" ({uncsize / t * 8 / 1000:.1f} kbit/s)"
+            log.print(
+                f"Wrote {uncsize} bytes ({bytes_sent} compressed) "
+                f"at {address:#010x} in {t:.1f} seconds{speed_msg}."
             )
         else:
             if t > 0.0:
                 speed_msg = " (%.1f kbit/s)" % (bytes_written / t * 8 / 1000)
-            log.print_overwrite(
+            log.print(
                 f"Wrote {bytes_written} bytes at {address:#010x} in {t:.1f} "
-                f"seconds{speed_msg}...",
-                last_line=True,
+                f"seconds{speed_msg}."
             )
 
         if not encrypted and not esp.secure_download_mode:
             try:
                 res = esp.flash_md5sum(address, uncsize)
                 if res != calcmd5:
-                    log.print(f"File  MD5: {calcmd5}")
+                    log.print(f"Input MD5: {calcmd5}")
                     log.print(f"Flash MD5: {res}")
                     if res == hashlib.md5(b"\xff" * uncsize).hexdigest():
                         raise FatalError(
@@ -879,9 +912,9 @@ def write_flash(
         esp.flash_begin(0, 0)
 
         # Get the "encrypted" flag for the last file flashed
-        # Note: all_files list contains triplets like:
-        # (address: Integer, filename: String, encrypted: Boolean)
-        last_file_encrypted = all_files[-1][2]
+        # Note: all_files list contains quadruplets like:
+        # (address: int, filename: str | None, data: bytes, encrypted: bool)
+        last_file_encrypted = all_files[-1][3]
 
         # Check whether the last file flashed was compressed or not
         if compress and not last_file_encrypted:
@@ -899,7 +932,7 @@ def read_mac(esp: ESPLoader) -> None:
     """
 
     def print_mac(label, mac):
-        log.print(f"{label}: {':'.join(f'{x:02x}' for x in mac)}")
+        log.print(f"{label + ':':<20}{':'.join(f'{x:02x}' for x in mac)}")
 
     eui64 = esp.read_mac("EUI64")
     if eui64:
@@ -922,7 +955,7 @@ def chip_id(esp: ESPLoader) -> None:
         chipid = esp.chip_id()
         log.print(f"Chip ID: {chipid:#010x}")
     except NotSupportedError:
-        log.warning(f"{esp.CHIP_NAME} has no Chip ID. Reading MAC instead.")
+        log.warning(f"{esp.CHIP_NAME} has no chip ID. Reading MAC address instead.")
         read_mac(esp)
 
 
@@ -1108,15 +1141,14 @@ def _set_flash_parameters(esp, flash_size="keep"):
     # Set flash parameters
     if flash_size is not None:  # Not "keep" in secure download mode
         esp.flash_set_parameters(flash_size_bytes(flash_size))
-        # Check if stub supports chosen flash size
+        # Check if stub/ROM supports chosen flash size
         if (
-            esp.IS_STUB
-            and esp.CHIP_NAME != "ESP32-S3"
+            not (esp.IS_STUB and esp.CHIP_NAME == "ESP32-S3")
             and flash_size_bytes(flash_size) > 16 * 1024 * 1024
         ):
             log.note(
-                "Flasher stub doesn't fully support flash size larger "
-                "than 16MB, disable it in case of failure."
+                "Flash sizes larger than than 16MB are not fully supported. "
+                "Change the flash size argument in case of a failure."
             )
 
     return "keep" if keep else flash_size
@@ -1138,15 +1170,17 @@ def erase_flash(esp: ESPLoader, force: bool = False) -> None:
                 "Use the force argument to override, "
                 "please use with caution, otherwise it may brick your device!"
             )
-    log.print("Erasing flash (this may take a while)...")
+    log.stage()
+    log.print("Erasing flash memory (this may take a while)...")
     if esp.CHIP_NAME != "ESP8266" and not esp.IS_STUB:
         log.note(
-            "You can use the erase_region command in ROM bootloader "
+            "You can use the erase-region command in ROM bootloader "
             "mode to erase a specific region."
         )
     t = time.time()
     esp.erase_flash()
-    log.print(f"Chip erase completed successfully in {time.time() - t:.1f} seconds.")
+    log.stage(finish=True)
+    log.print(f"Flash memory erased successfully in {time.time() - t:.1f} seconds.")
 
 
 def erase_region(esp: ESPLoader, address: int, size: int, force: bool = False) -> None:
@@ -1161,11 +1195,12 @@ def erase_region(esp: ESPLoader, address: int, size: int, force: bool = False) -
     """
     if address % ESPLoader.FLASH_SECTOR_SIZE != 0:
         raise FatalError(
-            f"Offset to erase from must be a multiple of {ESPLoader.FLASH_SECTOR_SIZE}"
+            f"Offset to erase from must be a multiple of {ESPLoader.FLASH_SECTOR_SIZE}."
         )
     if size % ESPLoader.FLASH_SECTOR_SIZE != 0:
         raise FatalError(
-            f"Size of data to erase must be a multiple of {ESPLoader.FLASH_SECTOR_SIZE}"
+            "Size of data to erase must be a multiple of "
+            f"{ESPLoader.FLASH_SECTOR_SIZE}."
         )
     if not force and esp.CHIP_NAME != "ESP8266" and not esp.secure_download_mode:
         if esp.get_flash_encryption_enabled() or esp.get_secure_boot_enabled():
@@ -1175,14 +1210,20 @@ def erase_region(esp: ESPLoader, address: int, size: int, force: bool = False) -
                 "Use the force argument to override, "
                 "please use with caution, otherwise it may brick your device!"
             )
-    log.print("Erasing region (may be slow depending on size)...")
+    log.stage()
+    log.print(
+        "Erasing flash memory region (this may take a while depending on size)..."
+    )
     t = time.time()
     if esp.CHIP_NAME != "ESP8266" and not esp.IS_STUB:
         # flash_begin triggers a flash erase, enabling erasing in ROM and SDM
         esp.flash_begin(size, address, logging=False)
     else:
         esp.erase_region(address, size)
-    log.print(f"Erase completed successfully in {time.time() - t:.1f} seconds.")
+    log.stage(finish=True)
+    log.print(
+        f"Flash memory region erased successfully in {time.time() - t:.1f} seconds."
+    )
 
 
 def run(esp: ESPLoader) -> None:
@@ -1219,6 +1260,9 @@ def flash_id(esp: ESPLoader) -> None:
     Args:
         esp: Initiated esp object connected to a real device.
     """
+    title = "Flash Memory Information:"
+    log.print(title)
+    log.print("=" * len(title))
     print_flash_id(esp)
     flash_type = esp.flash_type()
     flash_type_dict = {0: "quad (4 data lines)", 1: "octal (8 data lines)"}
@@ -1245,9 +1289,9 @@ def read_flash_sfdp(esp: ESPLoader, address: int, bytes: int = 1) -> None:
         raise FatalError("Invalid number of bytes to read from SFDP (1-4).")
     print_flash_id(esp)
     sfdp = esp.read_spiflash_sfdp(address, bytes * 8)
-    log.print(f"SFDP[{address}..{address + bytes - 1}]: ", end="")
+    log.print(f"Flash memory SFDP[{address}..{address + bytes - 1}]: ", end="")
     for _ in range(bytes):
-        log.print(f"{sfdp & 0xFF:02X} ", end="")
+        log.print(f"{sfdp & 0xFF:#04x} ", end="")
         sfdp = sfdp >> 8
     log.print()
 
@@ -1286,52 +1330,50 @@ def read_flash(
         flash_progress = None
     else:
 
-        def flash_progress(progress, length):
-            percent = progress * 100.0 / length
-            log.set_progress(percent)
+        def flash_progress(progress, length, offset):
+            log.progress_bar(
+                cur_iter=progress,
+                total_iters=length,
+                prefix=f"Reading from {offset + progress:#010x} ",
+                suffix=f" {progress}/{length} bytes...",
+            )
 
-            msg = f"{progress} ({percent:.0f} %)"
-            padding = "\b" * len(msg)
-
-            if progress != length:
-                log.print_overwrite(f"{msg}{padding}")
-            else:
-                log.print_overwrite(f"{msg}", last_line=True)
-
-    log.set_progress(0)
+    log.stage()
     t = time.time()
     data = esp.read_flash(address, size, flash_progress)
     t = time.time() - t
     speed_msg = " ({:.1f} kbit/s)".format(len(data) / t * 8 / 1000) if t > 0.0 else ""
-    log.print_overwrite(
-        f"Read {len(data)} bytes at {address:#010x} in {t:.1f} seconds{speed_msg}...",
-        last_line=True,
+    dest_msg = f" to '{output}'" if output else ""
+    log.stage(finish=True)
+    log.print(
+        f"Read {len(data)} bytes from {address:#010x} in {t:.1f} seconds"
+        f"{speed_msg}{dest_msg}."
     )
     if output:
         with open(output, "wb") as f:
             f.write(data)
-        log.print(f"Flash read to '{output}' completed.")
         return None
     else:
-        log.print("Flash read completed.")
         return data
 
 
 def verify_flash(
     esp: ESPLoader,
-    addr_filename: list[tuple[int, BinaryIO]],
+    addr_data: list[tuple[int, ImageSource]],
     flash_freq: str = "keep",
     flash_mode: str = "keep",
     flash_size: str = "keep",
     diff: bool = False,
 ) -> None:
     """
-    Verify the contents of the SPI flash memory against the provided binary files.
+    Verify the contents of the SPI flash memory against the provided binary files
+    or byte data.
 
     Args:
         esp: Initiated esp object connected to a real device.
-        addr_filename: List of (address, file) tuples specifying what
-            parts of flash memory to verify.
+        addr_data: List of (address, data) tuples specifying what
+            parts of flash memory to verify. The data can be
+            a file path (str), bytes, or a file-like object.
         flash_freq: Flash frequency setting (``"keep"`` to retain current).
         flash_mode: Flash mode setting (``"keep"`` to retain current).
         flash_size: Flash size setting (``"keep"`` to retain current).
@@ -1340,44 +1382,45 @@ def verify_flash(
     flash_size = _set_flash_parameters(esp, flash_size)  # Set flash size parameters
     mismatch = False
 
-    for address, argfile in addr_filename:
-        image = pad_to(argfile.read(), 4)
-        argfile.seek(0)  # rewind in case we need it again
+    for address, data in addr_data:
+        data, source = get_bytes(data)
+        image = pad_to(data, 4)
 
         image = _update_image_flash_params(
             esp, address, flash_freq, flash_mode, flash_size, image
         )
 
         image_size = len(image)
+        source = "input bytes" if source is None else f"'{source}'"
         log.print(
             f"Verifying {image_size:#x} ({image_size}) bytes "
-            f"at {address:#010x} in flash against {argfile.name}..."
+            f"at {address:#010x} in flash against {source}..."
         )
         # Try digest first, only read if there are differences.
         digest = esp.flash_md5sum(address, image_size)
         expected_digest = hashlib.md5(image).hexdigest()
         if digest == expected_digest:
-            log.print("-- verify OK (digest matched)")
+            log.print("Verification successful (digest matched).")
             continue
         else:
             mismatch = True
             if not diff:
-                log.print("-- verify FAILED (digest mismatch)")
+                log.print("Verification failed (digest mismatch).")
                 continue
 
         flash = esp.read_flash(address, image_size)
         assert flash != image
         differences = [i for i in range(image_size) if flash[i] != image[i]]
         log.print(
-            f"-- verify FAILED: {len(differences)} differences, "
-            f"first at {address + differences[0]:#010x}"
+            f"Verification failed: {len(differences)} differences, "
+            f"first at {address + differences[0]:#010x}:"
         )
         for d in differences:
             flash_byte = flash[d]
             image_byte = image[d]
-            log.print(f"   {address + d:08x} {flash_byte:02x} {image_byte:02x}")
+            log.print(f"   {address + d:#010x} {flash_byte:02x} {image_byte:02x}")
     if mismatch:
-        raise FatalError("Verify failed.")
+        raise FatalError("Verification failed.")
 
 
 def read_flash_status(esp: ESPLoader, bytes: int = 2) -> None:
@@ -1388,7 +1431,7 @@ def read_flash_status(esp: ESPLoader, bytes: int = 2) -> None:
         esp: Initiated esp object connected to a real device.
         bytes: Number of bytes to read.
     """
-    log.print(f"Status value: {esp.read_status(bytes):#06x}")
+    log.print(f"Flash memory status: {esp.read_status(bytes):#06x}")
 
 
 def write_flash_status(
@@ -1406,10 +1449,10 @@ def write_flash_status(
     """
     fmt = f"0x%0{bytes * 2}x"
     value = value & ((1 << (bytes * 8)) - 1)
-    log.print(f"Initial flash status: {fmt % esp.read_status(bytes)}")
-    log.print(f"Setting flash status: {fmt % value}")
+    log.print(f"Initial flash memory status: {fmt % esp.read_status(bytes)}")
+    log.print(f"Setting flash memory status: {fmt % value}")
     esp.write_status(value, bytes, non_volatile)
-    log.print(f"After flash status:   {fmt % esp.read_status(bytes)}")
+    log.print(f"After flash memory status:   {fmt % esp.read_status(bytes)}")
 
 
 def get_security_info(esp: ESPLoader) -> None:
@@ -1443,7 +1486,6 @@ def get_security_info(esp: ESPLoader) -> None:
             raise ValueError(f"Invalid flag name: {flag_name}")
 
     si = esp.get_security_info()
-    log.print()
     title = "Security Information:"
     log.print(title)
     log.print("=" * len(title))
@@ -1516,30 +1558,30 @@ def get_security_info(esp: ESPLoader) -> None:
         log.print("USB Access: Disabled")
 
 
-def reset_chip(esp: ESPLoader, reset_mode: str = "hard_reset") -> None:
+def reset_chip(esp: ESPLoader, reset_mode: str = "hard-reset") -> None:
     """
     Reset the ESP device.
 
     Args:
         esp: Initiated esp object connected to a real device.
         reset_mode: Reset mode to use (
-            ``"hard_reset"``: perform a hard reset using the RTS control line,
-            ``"soft_reset"``: perform a soft reset,
-            ``"no_reset"``: stay in bootloader,
-            ``"no_reset_stub"``: stay in flasher stub,
-            ``"watchdog_reset"``: perform a hard reset utilizing a software watchdog.
+            ``"hard-reset"``: perform a hard reset using the RTS control line,
+            ``"soft-reset"``: perform a soft reset,
+            ``"no-reset"``: stay in bootloader,
+            ``"no-reset-stub"``: stay in flasher stub,
+            ``"watchdog-reset"``: perform a hard reset utilizing a software watchdog.
             )
 
     """
-    if reset_mode == "hard_reset":
+    if reset_mode == "hard-reset":
         esp.hard_reset()
-    elif reset_mode == "soft_reset":
+    elif reset_mode == "soft-reset":
         log.print("Soft resetting...")
         # flash_finish will trigger a soft reset
         esp.soft_reset(False)
-    elif reset_mode == "no_reset_stub":
+    elif reset_mode == "no-reset-stub":
         log.print("Staying in flasher stub.")
-    elif reset_mode == "watchdog_reset":
+    elif reset_mode == "watchdog-reset":
         if esp.secure_download_mode:
             log.warning(
                 "Watchdog hard reset is not supported in Secure Download Mode, "
@@ -1548,7 +1590,7 @@ def reset_chip(esp: ESPLoader, reset_mode: str = "hard_reset") -> None:
             esp.hard_reset()
         else:
             esp.watchdog_reset()
-    elif reset_mode == "no_reset":
+    elif reset_mode == "no-reset":
         log.print("Staying in bootloader.")
         if esp.IS_STUB:
             esp.soft_reset(True)  # Exit the stub flasher back to ROM loader
@@ -1571,12 +1613,12 @@ def run_stub(esp: ESPLoader) -> ESPLoader:
     """
     if esp.secure_download_mode:
         log.warning(
-            "Stub loader is not supported in Secure Download Mode, "
+            "Stub flasher is not supported in Secure Download Mode, "
             "it has been disabled. Set --no-stub to suppress this warning."
         )
     elif not esp.IS_STUB and esp.stub_is_disabled:
         log.warning(
-            "Stub loader has been disabled for compatibility, "
+            "Stub flasher has been disabled for compatibility, "
             "set --no-stub to suppress this warning."
         )
     elif esp.CHIP_NAME in [
@@ -1584,7 +1626,7 @@ def run_stub(esp: ESPLoader) -> ESPLoader:
         "ESP32-H4",
     ]:  # TODO: [ESP32H21] IDF-11509   [ESP32H4] IDF-12271
         log.warning(
-            f"Stub loader is not yet supported on {esp.CHIP_NAME}, "
+            f"Stub flasher is not yet supported on {esp.CHIP_NAME}, "
             "it has been disabled. Set --no-stub to suppress this warning."
         )
     else:
@@ -1689,62 +1731,60 @@ def _parse_bootloader_info(bootloader_info_segment):
     }
 
 
-def image_info(filename: str, chip: str = "auto") -> None:
+def image_info(input: ImageSource, chip: str | None = None) -> None:
     """
     Display detailed information about an ESP firmware image.
 
     Args:
-        filename: Path to the firmware image file.
-        chip: Target ESP device type (e.g., ``"esp32"``). If set to "auto", the chip
+        input: Path to the firmware image file, opened file-like object,
+            or the image data as bytes.
+        chip: Target ESP device type (e.g., ``"esp32"``). If None, the chip
             type will be automatically detected from the image header.
     """
-    log.print(f"File size: {get_file_size(filename)} (bytes)")
-    with open(filename, "rb") as f:
-        # magic number
+
+    data, _ = get_bytes(input)
+    log.print(f"Image size: {len(data)} bytes")
+    stream = io.BytesIO(data)
+    common_header = stream.read(8)
+    if chip is None:
+        extended_header = stream.read(16)
+    stream.seek(0)
+
+    # Check magic number
+    try:
+        magic = common_header[0]
+    except IndexError:
+        raise FatalError("Image is empty.")
+    if magic not in [
+        ESPLoader.ESP_IMAGE_MAGIC,
+        ESP8266V2FirmwareImage.IMAGE_V2_MAGIC,
+    ]:
+        raise FatalError(
+            f"This is not a valid image (invalid magic number: {magic:#x})."
+        )
+
+    if chip is None:
         try:
-            common_header = f.read(8)
-            magic = common_header[0]
-        except IndexError:
-            raise FatalError("File is empty")
-        if magic not in [
-            ESPLoader.ESP_IMAGE_MAGIC,
-            ESP8266V2FirmwareImage.IMAGE_V2_MAGIC,
-        ]:
-            raise FatalError(
-                f"This is not a valid image (invalid magic number: {magic:#x})"
-            )
+            # append_digest, either 0 or 1
+            if extended_header[-1] not in [0, 1]:
+                raise FatalError("Append digest field not 0 or 1.")
 
-        if chip == "auto":
-            try:
-                extended_header = f.read(16)
+            chip_id = int.from_bytes(extended_header[4:5], "little")
+            for rom in ROM_LIST:
+                if chip_id == rom.IMAGE_CHIP_ID:
+                    chip = rom.CHIP_NAME
+                    break
+            else:
+                raise FatalError(f"Unknown image chip ID ({chip_id}).")
+        except FatalError:
+            chip = "esp8266"
 
-                # append_digest, either 0 or 1
-                if extended_header[-1] not in [0, 1]:
-                    raise FatalError("Append digest field not 0 or 1")
+        log.print(f"Detected image type: {chip.upper()}")
 
-                chip_id = int.from_bytes(extended_header[4:5], "little")
-                for rom in [n for n in ROM_LIST if n.CHIP_NAME != "ESP8266"]:
-                    if chip_id == rom.IMAGE_CHIP_ID:
-                        chip = rom.CHIP_NAME
-                        break
-                else:
-                    raise FatalError(f"Unknown image chip ID ({chip_id})")
-            except FatalError:
-                chip = "esp8266"
-
-            log.print(f"Detected image type: {chip.upper()}")
-
-    image = LoadFirmwareImage(chip, filename)
-
-    def get_key_from_value(dict, val):
-        """Get key from value in dictionary"""
-        for key, value in dict.items():
-            if value == val:
-                return key
-        return None
+    image = LoadFirmwareImage(chip, data)
 
     log.print()
-    title = f"{chip.upper()} image header".format()
+    title = f"{chip.upper()} Image Header"
     log.print(title)
     log.print("=" * len(title))
     log.print(f"Image version: {image.version}")
@@ -1782,7 +1822,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
     # Extended header (ESP32 and later only)
     if chip != "esp8266":
         log.print()
-        title = f"{chip.upper()} extended image header"
+        title = f"{chip.upper()} Extended Image Header"
         log.print(title)
         log.print("=" * len(title))
         log.print(
@@ -1822,7 +1862,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
     log.print()
 
     # Segments overview
-    title = "Segments information"
+    title = "Segments Information"
     log.print(title)
     log.print("=" * len(title))
     headers_str = "{:>7}  {:>7}  {:>10}  {:>10}  {:10}"
@@ -1851,7 +1891,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
     log.print()
 
     # Footer
-    title = f"{chip.upper()} image footer"
+    title = f"{chip.upper()} Image Footer"
     log.print(title)
     log.print("=" * len(title))
     calc_checksum = image.calculate_checksum()
@@ -1881,7 +1921,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
         app_desc = _parse_app_info(app_desc_seg)
         if app_desc:
             log.print()
-            title = "Application information"
+            title = "Application Information"
             log.print(title)
             log.print("=" * len(title))
             log.print(f"Project name: {app_desc['project_name']}")
@@ -1903,7 +1943,7 @@ def image_info(filename: str, chip: str = "auto") -> None:
         bootloader_desc = _parse_bootloader_info(bootloader_desc_seg)
         if bootloader_desc:
             log.print()
-            title = "Bootloader information"
+            title = "Bootloader Information"
             log.print(title)
             log.print("=" * len(title))
             log.print(f"Bootloader version: {bootloader_desc['version']}")
@@ -1912,15 +1952,15 @@ def image_info(filename: str, chip: str = "auto") -> None:
 
 
 def merge_bin(
-    addr_filename: list[tuple[int, BinaryIO]],
-    output: str,
+    addr_data: list[tuple[int, ImageSource]],
     chip: str,
+    output: str | None = None,
     flash_freq: str = "keep",
     flash_mode: str = "keep",
     flash_size: str = "keep",
     format: str = "raw",
     **kwargs,
-) -> None:
+) -> bytes | None:
     """
     Merge multiple binary files into a single output file for flashing to an ESP device.
 
@@ -1929,10 +1969,12 @@ def merge_bin(
     Also apply necessary flash parameters and ensure correct alignment for flashing.
 
     Args:
-        addr_filename: List of (address, file) pairs specifying
-            memory offsets and corresponding binary files.
-        output: Path to the output file where the merged binary will be written.
+        addr_data: List of (address, data) tuples specifying where
+            to write each file or data in flash memory. The data can be
+            a file path (str), bytes, or a file-like object.
         chip: Target ESP device type (e.g., ``"esp32"``).
+        output: Path to the output file where the merged binary will be written.
+            If None, the merged binary will be returned as bytes.
         flash_freq: Flash frequency to set in the image header
             (``"keep"`` to retain current).
         flash_mode: Flash mode to set in the image header
@@ -1946,6 +1988,10 @@ def merge_bin(
         pad_to_size (str | None): If specified, pad the output to a specific flash size.
         chunk_size (int | None): Chunk size for UF2 format.
         md5_disable (bool): If True, disable MD5 checks in UF2 format.
+
+    Returns:
+        The merged binary data as bytes if output is None; otherwise,
+        returns None after writing to file.
     """
 
     # Set default values of optional arguments
@@ -1954,81 +2000,99 @@ def merge_bin(
     chunk_size: int | None = kwargs.get("chunk_size", None)
     md5_disable: bool = kwargs.get("md5_disable", False)
 
+    if format not in ["raw", "uf2", "hex"]:
+        raise FatalError(
+            f"Invalid format: '{format}', choose from 'raw', 'uf2', 'hex'."
+        )
+
+    if output is None and format in ["uf2", "hex"]:
+        raise FatalError(f"Output file must be specified with {format.upper()} format.")
+
     try:
         chip_class = CHIP_DEFS[chip]
     except KeyError:
-        msg = (
-            "Please specify the chip argument"
-            if chip == "auto"
-            else f"Invalid chip choice: '{chip}'"
+        raise FatalError(
+            f"Invalid chip choice: '{chip}' (choose from {', '.join(CHIP_LIST)})."
         )
-        msg = f"{msg} (choose from {', '.join(CHIP_LIST)})"
-        raise FatalError(msg)
 
     # sort the files by offset.
     # The AddrFilenamePairAction has already checked for overlap
-    input_files = sorted(addr_filename, key=lambda x: x[0])
-    if not input_files:
-        raise FatalError("No input files specified")
-    first_addr = input_files[0][0]
+    addr_data = sorted(addr_data, key=lambda x: x[0])
+    if not addr_data:
+        raise FatalError("No input data.")
+    first_addr = addr_data[0][0]
     if first_addr < target_offset:
         raise FatalError(
-            f"Output file target offset is {target_offset:#x}. "
-            f"Input file offset {first_addr:#x} is before this."
+            f"Output data target offset is {target_offset:#x}. "
+            f"Input data offset {first_addr:#x} is before this."
         )
 
-    if format == "uf2":
+    if output is not None and format == "uf2":
         with UF2Writer(
             chip_class.UF2_FAMILY_ID,
             output,
             chunk_size,
             md5_enabled=not md5_disable,
         ) as writer:
-            for addr, argfile in input_files:
-                log.print(f"Adding {argfile.name} at {addr:#x}")
-                image = argfile.read()
+            for addr, data in addr_data:
+                image, source = get_bytes(data)
+                source = "bytes" if source is None else f"'{source}'"
+                log.print(f"Adding {source} at {addr:#x}...")
                 image = _update_image_flash_params(
                     chip_class, addr, flash_freq, flash_mode, flash_size, image
                 )
                 writer.add_file(addr, image)
         log.print(
-            f"Wrote {os.path.getsize(output):#x} bytes to file {output}, "
-            f"ready to be flashed with any ESP USB Bridge"
+            f"Wrote {os.path.getsize(output):#x} bytes to file '{output}', "
+            f"ready to be flashed with any ESP USB Bridge."
         )
 
     elif format == "raw":
-        with open(output, "wb") as of:
+        of = io.BytesIO() if output is None else open(output, "wb")
+        try:
 
             def pad_to(flash_offs):
                 # account for output file offset if there is any
                 of.write(b"\xff" * (flash_offs - target_offset - of.tell()))
 
-            for addr, argfile in input_files:
+            for addr, data in addr_data:
                 pad_to(addr)
-                image = argfile.read()
+                image, _ = get_bytes(data)
                 image = _update_image_flash_params(
                     chip_class, addr, flash_freq, flash_mode, flash_size, image
                 )
                 of.write(image)
             if pad_to_size:
                 pad_to(flash_size_bytes(pad_to_size))
-            log.print(
-                f"Wrote {of.tell():#x} bytes to file {output}, "
-                f"ready to flash to offset {target_offset:#x}"
-            )
+            size = of.tell()
+        finally:
+            if output is not None:
+                of.close()
 
-    elif format == "hex":
+        if output is None and isinstance(of, io.BytesIO):
+            log.print(
+                f"Merged {size:#x} bytes, ready to flash to offset {target_offset:#x}."
+            )
+            return of.getvalue()
+        else:
+            log.print(
+                f"Wrote {size:#x} bytes to file '{output}', "
+                f"ready to flash to offset {target_offset:#x}."
+            )
+            return None
+
+    elif output is not None and format == "hex":
         out = IntelHex()
-        if len(input_files) == 1:
+        if len(addr_data) == 1:
             log.warning(
                 "Only one input file specified, output may include "
                 "additional padding if input file was previously merged. "
                 "Please refer to the documentation for more information: "
                 "https://docs.espressif.com/projects/esptool/en/latest/esptool/basic-commands.html#hex-output-format"  # noqa E501
             )
-        for addr, argfile in input_files:
+        for addr, data in addr_data:
             ihex = IntelHex()
-            image = argfile.read()
+            image, _ = get_bytes(data)
             image = _update_image_flash_params(
                 chip_class, addr, flash_freq, flash_mode, flash_size, image
             )
@@ -2036,27 +2100,31 @@ def merge_bin(
             out.merge(ihex)
         out.write_hex_file(output)
         log.print(
-            f"Wrote {os.path.getsize(output):#x} bytes to file {output}, "
-            f"ready to flash to offset {target_offset:#x}"
+            f"Wrote {os.path.getsize(output):#x} bytes to file '{output}', "
+            f"ready to flash to offset {target_offset:#x}."
         )
+    return None
 
 
 def elf2image(
-    input: str,
+    input: ImageSource,
     chip: str,
     output: str | None = None,
     flash_freq: str | None = None,
     flash_mode: str = "qio",
     flash_size: str = "1MB",
     **kwargs,
-) -> None:
+) -> bytes | tuple[bytes | None, bytes] | None:
     """
-    Convert an ELF file into a firmware image suitable for flashing onto an ESP device.
+    Convert ELF data into a firmware image suitable for flashing onto an ESP device.
 
     Args:
-        input: Path to the ELF file.
-        chip: Target ESP device type. Defaults to ``"esp8266"`` if set to ``"auto"``.
-        output: Path to save the generated firmware image. If None, a default is used.
+        input: Path to the ELF file to convert, opened file-like object,
+            or the ELF data as bytes.
+        chip: Target ESP device type.
+        output: Path to save the generated firmware image. If "auto", a default
+            pre-defined path is used. If None, the image is not written to a file,
+            but returned as bytes.
         flash_freq: Flash frequency to set in the image header.
         flash_mode: Flash mode to set in the image header.
         flash_size: Flash size to set in the image header.
@@ -2074,6 +2142,13 @@ def elf2image(
         flash_mmu_page_size (str): MMU page size for flash mapping.
         pad_to_size (str): Pad the final image to a specific flash size.
         ram_only_header (bool): Include only RAM segments and no SHA-256 hash.
+
+    Returns:
+        The firmware image as bytes if output is None; otherwise,
+        returns None after writing to file.
+        When ESP8266 V1 image is generated, returns a tuple of bytes
+        of IROM data and the rest if output is None; otherwise,
+        returns None after writing to two files.
     """
 
     # Set default values of optional arguments
@@ -2090,16 +2165,18 @@ def elf2image(
     pad_to_size: str | None = kwargs.get("pad_to_size", None)
     ram_only_header: bool = kwargs.get("ram_only_header", False)
 
-    e = ELFFile(input)
-    if chip == "auto":  # Default to ESP8266 for backwards compatibility
-        chip = "esp8266"
+    if chip not in CHIP_LIST:
+        raise FatalError(
+            f"Invalid chip choice: '{chip}' (choose from {', '.join(CHIP_LIST)})."
+        )
 
-    log.print(f"Creating {chip} image...")
-
+    data, source = get_bytes(input)
+    e = ELFFile(data)
+    log.print(f"Creating {chip.upper()} image...")
     if chip != "esp8266":
         bootloader_image = CHIP_DEFS[chip].BOOTLOADER_IMAGE
         if bootloader_image is None:
-            raise FatalError(f"Missing bootloader image definition for {chip}")
+            raise FatalError(f"Missing bootloader image definition for {chip}.")
         else:
             image = bootloader_image()
         if chip == "esp32" and secure_pad:
@@ -2173,10 +2250,14 @@ def elf2image(
     if elf_sha256_offset:
         image.elf_sha256 = e.sha256()
         image.elf_sha256_offset = elf_sha256_offset
-    # If ELF file contains an app_desc section, put the SHA256 digest at correct offset
-    elif any(".flash.appdesc" in seg.name for seg in image.segments):
-        image.elf_sha256 = e.sha256()
-        image.elf_sha256_offset = 0xB0
+    else:
+        # If ELF file contains an app_desc section and it is in flash,
+        # put the SHA256 digest at correct offset.
+        # If it is flash build, it should always be 0xB0.
+        appdesc_segs = [seg for seg in image.segments if ".flash.appdesc" in seg.name]
+        if appdesc_segs and image.is_flash_addr(appdesc_segs[0].addr):
+            image.elf_sha256 = e.sha256()
+            image.elf_sha256_offset = 0xB0
 
     if ram_only_header:
         log.print(
@@ -2189,15 +2270,15 @@ def elf2image(
     image.merge_adjacent_segments()
     if len(image.segments) != before:
         delta = before - len(image.segments)
-        log.print(f"Merged {delta} ELF section{'s' if delta > 1 else ''}")
+        log.print(f"Merged {delta} ELF section{'s' if delta > 1 else ''}.")
 
     image.verify()
+    log.print(f"Successfully created {chip.upper()} image.")
 
-    if output is None:
-        output = image.default_output_name(input)
-    image.save(output)
-
-    log.print(f"Successfully created {chip} image.")
+    if output == "auto":
+        source = f"{chip}_image" if source is None else source
+        output = image.default_output_name(source)
+    return cast(bytes | tuple[bytes | None, bytes] | None, image.save(output))
 
 
 def version() -> None:

@@ -24,6 +24,23 @@ class ChipType(click.Choice):
         return super().convert(value, param, ctx)
 
 
+class ResetModeType(click.Choice):
+    """Custom type to accept reset mode names with underscores as separators
+    for compatibility with v4"""
+
+    def convert(self, value: str, param: click.Parameter, ctx: click.Context) -> Any:
+        if "_" in value:
+            new_value = value.replace("_", "-")
+            if new_value not in self.choices:
+                raise click.BadParameter(f"{value} is not a valid reset mode.")
+            log.warning(
+                f"Deprecated: Choice '{value}' for option '--{param.name}' is "
+                f"deprecated. Use '{new_value}' instead."
+            )
+            return new_value
+        return super().convert(value, param, ctx)
+
+
 class AnyIntType(click.ParamType):
     """Custom type to parse any integer value - decimal, hex, octal, or binary"""
 
@@ -37,17 +54,33 @@ class AnyIntType(click.ParamType):
         try:
             return arg_auto_int(value)
         except ValueError:
-            raise click.BadParameter(f"{value!r} is not a valid integer")
+            raise click.BadParameter(f"{value!r} is not a valid integer.")
 
 
 class AutoSizeType(AnyIntType):
-    """Similar to AnyIntType but allows 'all' as a value to e.g. read whole flash"""
+    """Similar to AnyIntType but allows 'k', 'M' suffixes for kilo(1024), Mega(1024^2)
+    and 'all' as a value to e.g. read whole flash"""
+
+    def __init__(self, allow_all: bool = True):
+        self.allow_all = allow_all
+        super().__init__()
 
     def convert(
         self, value: str, param: click.Parameter | None, ctx: click.Context
     ) -> Any:
-        if value.lower() == "all":
+        if self.allow_all and value.lower() == "all":
             return value
+        # Handle suffixes like 'k', 'M' for kilo, mega
+        if value[-1] in ("k", "M"):
+            try:
+                num = arg_auto_int(value[:-1])
+            except ValueError:
+                raise click.BadParameter(f"{value!r} is not a valid integer")
+            if value[-1] == "k":
+                num *= 1024
+            elif value[-1] == "M":
+                num *= 1024 * 1024
+            return num
         return super().convert(value, param, ctx)
 
 
@@ -61,7 +94,7 @@ class AutoChunkSizeType(AnyIntType):
     ) -> int:
         num = super().convert(value, param, ctx)
         if num & 3 != 0:
-            raise click.BadParameter("Chunk size should be a 4-byte aligned number")
+            raise click.BadParameter("Chunk size should be a 4-byte aligned number.")
         return num
 
 
@@ -90,7 +123,7 @@ class SpiConnectionType(click.ParamType):
             except ValueError:
                 raise click.BadParameter(
                     f"{values} is not a valid argument. "
-                    "All pins must be numeric values",
+                    "All pins must be numeric values.",
                 )
         else:
             raise click.BadParameter(
@@ -133,7 +166,7 @@ class AddrFilenamePairType(click.Path):
     ):
         if len(value) % 2 != 0:
             raise click.BadParameter(
-                "Must be pairs of an address and the binary filename to write there",
+                "Must be pairs of an address and the binary filename to write there.",
             )
         if len(value) == 0:
             return value
@@ -143,7 +176,7 @@ class AddrFilenamePairType(click.Path):
             try:
                 address = arg_auto_int(value[i])
             except ValueError:
-                raise click.BadParameter(f'Address "{value[i]}" must be a number')
+                raise click.BadParameter(f'Address "{value[i]}" must be a number.')
             try:
                 # Store file handle in context for later cleanup
                 if not hasattr(ctx, "_open_files"):
@@ -170,7 +203,7 @@ class AddrFilenamePairType(click.Path):
             if sector_start < end:
                 raise click.BadParameter(
                     f"Detected overlap at address: "
-                    f"0x{address:x} for file: {argfile.name}",
+                    f"{address:#x} for file: {argfile.name}.",
                 )
             end = sector_end
         return pairs
@@ -180,15 +213,62 @@ class AddrFilenamePairType(click.Path):
 
 
 class Group(click.RichGroup):
+    DEPRECATED_OPTIONS = {
+        "--flash_size": "--flash-size",
+        "--flash_freq": "--flash-freq",
+        "--flash_mode": "--flash-mode",
+        "--use_segments": "--use-segments",
+        "--ignore_flash_encryption_efuse_setting": "--ignore-flash-enc-efuse",
+        "--fill-flash-size": "--pad-to-size",
+    }
+
     def __call__(self, esp: ESPLoader | None = None, *args, **kwargs):
         self._esp = esp  # store the external esp object in the group
         return super().__call__(*args, **kwargs)
+
+    def _replace_deprecated_args(self, args: list[str]) -> list[str]:
+        new_args = []
+        for arg in args:
+            if arg in self.DEPRECATED_OPTIONS.keys():
+                # Replace underscores with hyphens in option names
+                new_name = self.DEPRECATED_OPTIONS[arg]
+                if new_name != arg:
+                    log.warning(
+                        f"Deprecated: Option '{arg}' is deprecated. "
+                        f"Use '{new_name}' instead."
+                    )
+                    arg = new_name
+            new_args.append(arg)
+        return new_args
 
     def parse_args(self, ctx: click.Context, args: list[str]):
         """Set a flag if --help is used to skip the main"""
         ctx.esp = self._esp
         ctx._commands_list = self.list_commands(ctx)  # used for EatAllOptions
+        args = self._replace_deprecated_args(args)
         return super().parse_args(ctx, args)
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        """Allow dash and underscore for commands for compatibility with v4"""
+        rv = click.Group.get_command(self, ctx, cmd_name)
+        if rv is not None:
+            return rv
+        for cmd in self.list_commands(ctx):
+            cmd_alias = cmd.replace("-", "_")
+            if cmd_alias == cmd_name:
+                log.warning(
+                    f"Deprecated: Command '{cmd_name}' is deprecated. "
+                    f"Use '{cmd}' instead."
+                )
+                return click.Group.get_command(self, ctx, cmd)
+        return None
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str, click.Command, list[str]]:
+        # always return the full command name
+        _, cmd, args = super().resolve_command(ctx, args)
+        return cmd.name, cmd, args
 
 
 class AddrFilenameArg(click.Argument):
@@ -307,7 +387,7 @@ def parse_port_filters(
     for f in value:
         kvp = f.split("=")
         if len(kvp) != 2:
-            FatalError("Option --port-filter argument must consist of key=value")
+            FatalError("Option --port-filter argument must consist of key=value.")
         if kvp[0] == "vid":
             filterVids.append(arg_auto_int(kvp[1]))
         elif kvp[0] == "pid":
@@ -317,13 +397,20 @@ def parse_port_filters(
         elif kvp[0] == "serial":
             filterSerials.append(kvp[1])
         else:
-            raise FatalError("Option --port-filter argument key not recognized")
+            raise FatalError("Option --port-filter argument key not recognized.")
     return filterVids, filterPids, filterNames, filterSerials
 
 
 def parse_size_arg(esp: ESPLoader, size: int | str) -> int:
     """Parse the flash size argument and return the size in bytes"""
     if isinstance(size, int):
+        if not esp.secure_download_mode:
+            detected_size = flash_size_bytes(detect_flash_size(esp))
+            if detected_size and size > detected_size:
+                raise FatalError(
+                    f"Specified size {size:#x} is greater than detected flash size "
+                    f"{detected_size:#x}.",
+                )
         return size
     if size.lower() != "all":
         raise FatalError(f"Invalid size value: {size}. Use an integer or 'all'.")

@@ -2,7 +2,7 @@
 
 {IDF_TARGET_STRAP_BOOT_2_GPIO:default="GPIO8", esp32="GPIO2", esp32s2="GPIO46", esp32s3="GPIO46", esp32p4="GPIO36", esp32c5="GPIO27"}
 
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0", esp32="1000", esp32s2="1000", esp32p4="2000"}
+{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000"}
 
 .. _boot-mode:
 
@@ -224,7 +224,7 @@ Depending on the kind of hardware you have, it may also be possible to manually 
 
    **chksum:**
 
-   If value of “chksum” == value of “csum”, it means flash has been read correctly during booting.
+   If value of "chksum" == value of "csum", it means flash has been read correctly during booting.
 
    The rest of boot messages are used internally by Espressif.
 
@@ -290,15 +290,23 @@ Depending on the kind of hardware you have, it may also be possible to manually 
    Early Flash Read Error
    """"""""""""""""""""""
 
-   ::
+   .. only:: esp8266
 
-      flash read err, {IDF_TARGET_BOOTLOADER_OFFSET}
+      ::
 
-   This fatal error indicates that the bootloader tried to read the software bootloader header at address 0x{IDF_TARGET_BOOTLOADER_OFFSET} but failed to read valid data. Possible reasons for this include:
+         flash read err, 0
+
+   .. only:: not esp8266
+
+      ::
+
+         Invalid header <value at {IDF_TARGET_BOOTLOADER_OFFSET}>
+
+   This fatal error indicates that the bootloader tried to read the software bootloader header at address {IDF_TARGET_BOOTLOADER_OFFSET} but failed to read valid data. Possible reasons for this include:
 
    .. list::
 
-      -  There isn't actually a bootloader at offset 0x{IDF_TARGET_BOOTLOADER_OFFSET} (maybe the bootloader was flashed to the wrong offset by mistake, or the flash has been erased and no bootloader has been flashed yet.)
+      -  There isn't actually a bootloader at offset {IDF_TARGET_BOOTLOADER_OFFSET} (maybe the bootloader was flashed to the wrong offset by mistake, or the flash has been erased and no bootloader has been flashed yet.)
       -  Physical problem with the connection to the flash chip, or flash chip power.
       -  Flash encryption is enabled but the bootloader is plaintext. Alternatively, flash encryption is disabled but the bootloader is encrypted ciphertext.
 
@@ -326,7 +334,7 @@ Depending on the kind of hardware you have, it may also be possible to manually 
          mode:DIO, clock div:1
 
 
-   This is normal boot output based on a combination of eFuse values and information read from the bootloader header at flash offset 0x{IDF_TARGET_BOOTLOADER_OFFSET}:
+   This is normal boot output based on a combination of eFuse values and information read from the bootloader header at flash offset {IDF_TARGET_BOOTLOADER_OFFSET}:
 
    .. list::
 
@@ -339,10 +347,10 @@ Depending on the kind of hardware you have, it may also be possible to manually 
       -  ``SPIWP:0xNN`` indicates a custom ``WP`` pin value, which is stored in the bootloader header. This pin value is only used if SPI flash pins have been remapped via eFuse (as shown in the ``configsip`` value).
          All custom pin values but WP are encoded in the configsip byte loaded from eFuse, and WP is supplied in the bootloader header.
       :esp32: -  ``clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00`` Custom GPIO drive strength values for SPI flash pins. These are read from the bootloader header in flash. Not currently supported.
-      -  ``mode: AAA, clock div: N``. SPI flash access mode. Read from the bootloader header, correspond to the ``--flash_mode`` and ``--flash_freq`` arguments supplied to ``esptool.py write_flash`` or ``esptool.py elf2image``.
+      -  ``mode: AAA, clock div: N``. SPI flash access mode. Read from the bootloader header, correspond to the ``--flash-mode`` and ``--flash-freq`` arguments supplied to ``esptool.py write-flash`` or ``esptool.py elf2image``.
       -  ``mode`` can be DIO, DOUT, QIO, or QOUT. *QIO and QOUT are not supported here*, to boot in a Quad I/O mode the ROM bootloader should load the software bootloader in a Dual I/O mode and then the ESP-IDF software bootloader enables Quad I/O based on the detected flash chip mode.
-      -  ``clock div: N`` is the SPI flash clock frequency divider. This is an integer clock divider value from an 80MHz APB clock, based on the supplied ``--flash_freq`` argument (ie 80MHz=1, 40MHz=2, etc).
-         The ROM bootloader actually loads the software bootloader at a lower frequency than the flash_freq value. The initial APB clock frequency is equal to the crystal frequency, so with a 40MHz crystal the SPI clock used to load the software bootloader will be half the configured value (40MHz/2=20MHz).
+      -  ``clock div: N`` is the SPI flash clock frequency divider. This is an integer clock divider value from an 80MHz APB clock, based on the supplied ``--flash-freq`` argument (ie 80MHz=1, 40MHz=2, etc).
+         The ROM bootloader actually loads the software bootloader at a lower frequency than the ``--flash-freq`` value. The initial APB clock frequency is equal to the crystal frequency, so with a 40MHz crystal the SPI clock used to load the software bootloader will be half the configured value (40MHz/2=20MHz).
          When the software bootloader starts it sets the APB clock to 80MHz causing the SPI clock frequency to match the value set when flashing.
 
    Software Bootloader Load Segments
@@ -358,7 +366,7 @@ Depending on the kind of hardware you have, it may also be possible to manually 
 
    These entries are printed as the ROM bootloader loads each segment in the software bootloader image. The load address and length of each segment is printed.
 
-   You can compare these values to the software bootloader image by running ``esptool.py --chip {IDF_TARGET_PATH_NAME} image_info /path/to/bootloader.bin`` to dump image info including a summary of each segment. Corresponding details will also be found in the bootloader ELF file headers.
+   You can compare these values to the software bootloader image by running ``esptool.py --chip {IDF_TARGET_PATH_NAME} image-info /path/to/bootloader.bin`` to dump image info including a summary of each segment. Corresponding details will also be found in the bootloader ELF file headers.
 
    If there is a problem with the SPI flash chip addressing mode, the values printed by the bootloader here may be corrupted.
 

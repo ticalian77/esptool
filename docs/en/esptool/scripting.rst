@@ -19,7 +19,7 @@ The most straightforward and basic integration option is to pass arguments to ``
 
     import esptool
 
-    command = ['--baud', '460800', 'read_flash', '0', '0x200000', 'flash_contents.bin']
+    command = ['--baud', '460800', 'read-flash', '0', '0x200000', 'flash_contents.bin']
     print("Using command ", " ".join(command))
     esptool.main(command)
 
@@ -52,7 +52,7 @@ This example demonstrates writing two binary files using high-level commands:
         attach_flash(esp)  # Attach the flash memory chip, required for flash operations
         with open(BOOTLOADER, "rb") as bl_file, open(FIRMWARE, "rb") as fw_file:
             write_flash(esp, [(0, bl_file), (0x1000, fw_file)])  # Write the binary files
-        reset_chip(esp, "hard_reset")  # Reset the chip
+        reset_chip(esp, "hard-reset")  # Reset the chip
 
 - The ``esp`` object has to be replaced with the stub flasher object returned by ``run_stub(esp)`` when the stub flasher is activated. This step can be skipped if the stub flasher is not needed.
 - Running ``attach_flash(esp)`` is required for any flash-memory-related operations to work.
@@ -90,10 +90,44 @@ The following example demonstrates running a series of flash memory operations i
             write_flash(esp, [(0, bl_file), (0x1000, fw_file)])  # Write the binary files
             verify_flash(esp, [(0, bl_file), (0x1000, fw_file)])  # Verify the written data
         read_flash(esp, 0x0, 0x2400, "output.bin")  # Read the flash memory into a file
-        reset_chip(esp, "hard_reset")  # Reset the chip
+        reset_chip(esp, "hard-reset")  # Reset the chip
 
 - This example doesn't use ``detect_chip()``, but instantiates a ``ESP32ROM`` class directly. This is useful when you know the target chip in advance. In this scenario ``esp.connect()`` is required to establish a connection with the device.
 - Multiple operations can be chained together in a single context manager block.
+
+------------
+
+The Public API implements a custom ``ImageSource`` input type, which expands to ``str | bytes | IO[bytes]`` - a path to the firmware image file, an opened file-like object, or the image data as bytes.
+
+As output, the API returns a ``bytes`` object representing the binary image or writes the image to a file if the ``output`` parameter is provided.
+
+The following example converts an ELF file to a flashable binary, prints the image information, and flashes the image. The example demonstrates three different ways to achieve the same result, showcasing the flexibility of the API:
+
+.. code-block:: python
+
+    ELF = "firmware.elf"
+
+    # var 1 - Loading ELF from a file, not writing binary to a file
+    bin_file = elf2image(ELF, "esp32c3")
+    image_info(bin_file)
+    with detect_chip(PORT) as esp:
+        attach_flash(esp)
+        write_flash(esp, [(0, bin_file)])
+
+    # var 2 - Loading ELF from an opened file object, not writing binary to a file
+    with open(ELF, "rb") as elf_file, detect_chip(PORT) as esp:
+        bin_file = elf2image(elf_file, "esp32c3")
+        image_info(bin_file)
+        attach_flash(esp)
+        write_flash(esp, [(0, bin_file)])
+
+    # var 3 - Loading ELF from a file, writing binary to a file
+    elf2image(ELF, "esp32c3", "image.bin")
+    image_info("image.bin")
+    with detect_chip(PORT) as esp:
+        attach_flash(esp)
+        write_flash(esp, [(0, "image.bin")])
+
 
 ------------
 
@@ -199,7 +233,7 @@ For granular control and more configuration freedom, you can directly access the
 
 .. note::
 
-    This example code is a very basic implementation of ``esptool.py -p /dev/ttyACM0 write_flash 0x10000 firmware.bin``
+    This example code is a very basic implementation of ``esptool.py -p /dev/ttyACM0 write-flash 0x10000 firmware.bin``
 
 .. code-block:: python
 
@@ -261,7 +295,7 @@ Esptool allows redirecting output by implementing a custom logger class. This ca
         log_to_file = True
         log_file = "esptool.log"
 
-        def print(self, message, *args, **kwargs):
+        def print(self, message="", *args, **kwargs):
             # Print to console
             print(f"[CustomLogger]: {message}", *args, **kwargs)
             # Optionally log to a file
@@ -278,13 +312,21 @@ Esptool allows redirecting output by implementing a custom logger class. This ca
         def error(self, message):
             self.print(message, file=sys.stderr)
 
-        def print_overwrite(self, message, last_line=False):
-            # Overwriting not needed, print normally
-            self.print(message)
-
-        def set_progress(self, percentage):
-            # Progress updates not needed, pass
+        def stage(self, finish=False):
+            # Collapsible stages not needed in this example
             pass
+
+        def progress_bar(
+            self,
+            cur_iter,
+            total_iters,
+            prefix = "",
+            suffix = "",
+            bar_length: int = 30,
+        ):
+            # Progress bars replaced with simple percentage output in this example
+            percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
+            self.print(f"Finished: {percent}%")
 
     # Replace the default logger with the custom logger
     log.set_logger(CustomLogger())
@@ -300,11 +342,11 @@ To ensure compatibility with esptool, the custom logger should re-implement (or 
 - ``note``: Logs informational messages.
 - ``warning``: Logs warning messages.
 - ``error``: Logs error messages.
-- ``print_overwrite``: Handles message overwriting (can be a simple ``print()`` if overwriting is not needed).
-- ``set_progress``: Handles percentage updates of long-running operations - ``write_flash``, ``read_flash``, and ``dump_mem`` (useful for GUI visualisation, e.g. as a progress bar).
+- ``stage``: Starts or ends a collapsible output stage.
+- ``progress_bar``: Displays a progress bar.
 
 .. autoclass:: esptool.logger.EsptoolLogger
-   :members: print, note, warning, error, print_overwrite, set_progress
+   :members: print, note, warning, error, stage, progress_bar
    :member-order: bysource
 
-These methods are essential for maintaining proper integration and behavior with esptool. Additionally, all calls to the logger should be made using ``log.print()`` (or the respective method, such as ``log.info()`` or ``log.warning()``) instead of the standard ``print()`` function to ensure the output is routed through the custom logger. This ensures consistency and allows the custom logger to handle all output appropriately. You can further customize this logger to fit your application's needs, such as integrating with GUI components or advanced logging frameworks.
+These methods are essential for maintaining proper integration and behavior with esptool. Additionally, all output printing should be made using ``log.print()`` (or the respective method, such as ``log.info()`` or ``log.warning()``) instead of the standard ``print()`` function to ensure the output is routed through the custom logger. This ensures consistency and allows the custom logger to handle all output appropriately. You can further customize this logger to fit your application's needs, such as integrating with GUI components or advanced logging frameworks.
