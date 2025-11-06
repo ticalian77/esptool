@@ -25,18 +25,22 @@ class ESP32C5ROM(ESP32C6ROM):
 
     EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # BLOCK0 read base address
 
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG = EFUSE_BASE + 0x34
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT = 10
+    FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY = 2
+
     EFUSE_PURPOSE_KEY0_REG = EFUSE_BASE + 0x34
-    EFUSE_PURPOSE_KEY0_SHIFT = 24
+    EFUSE_PURPOSE_KEY0_SHIFT = 22
     EFUSE_PURPOSE_KEY1_REG = EFUSE_BASE + 0x34
-    EFUSE_PURPOSE_KEY1_SHIFT = 28
+    EFUSE_PURPOSE_KEY1_SHIFT = 27
     EFUSE_PURPOSE_KEY2_REG = EFUSE_BASE + 0x38
     EFUSE_PURPOSE_KEY2_SHIFT = 0
     EFUSE_PURPOSE_KEY3_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY3_SHIFT = 4
+    EFUSE_PURPOSE_KEY3_SHIFT = 5
     EFUSE_PURPOSE_KEY4_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY4_SHIFT = 8
+    EFUSE_PURPOSE_KEY4_SHIFT = 10
     EFUSE_PURPOSE_KEY5_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY5_SHIFT = 12
+    EFUSE_PURPOSE_KEY5_SHIFT = 15
 
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT_REG = EFUSE_RD_REG_BASE
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
@@ -83,8 +87,6 @@ class ESP32C5ROM(ESP32C6ROM):
     KEY_PURPOSES: dict[int, str] = {
         0: "USER/EMPTY",
         1: "ECDSA_KEY",
-        2: "XTS_AES_256_KEY_1",
-        3: "XTS_AES_256_KEY_2",
         4: "XTS_AES_128_KEY",
         5: "HMAC_DOWN_ALL",
         6: "HMAC_DOWN_JTAG",
@@ -94,6 +96,10 @@ class ESP32C5ROM(ESP32C6ROM):
         10: "SECURE_BOOT_DIGEST1",
         11: "SECURE_BOOT_DIGEST2",
         12: "KM_INIT_KEY",
+        15: "XTS_AES_128_PSRAM_KEY",
+        16: "ECDSA_KEY_P192",
+        17: "ECDSA_KEY_P384_L",
+        18: "ECDSA_KEY_P384_H",
     }
 
     def get_pkg_version(self):
@@ -167,6 +173,36 @@ class ESP32C5ROM(ESP32C6ROM):
             self.flush_input()
         else:
             ESPLoader.change_baud(self, baud)
+
+    def get_key_block_purpose(self, key_block):
+        if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
+            raise FatalError(
+                f"Valid key block numbers must be in range 0-{self.EFUSE_MAX_KEY}"
+            )
+
+        reg, shift = [
+            (self.EFUSE_PURPOSE_KEY0_REG, self.EFUSE_PURPOSE_KEY0_SHIFT),
+            (self.EFUSE_PURPOSE_KEY1_REG, self.EFUSE_PURPOSE_KEY1_SHIFT),
+            (self.EFUSE_PURPOSE_KEY2_REG, self.EFUSE_PURPOSE_KEY2_SHIFT),
+            (self.EFUSE_PURPOSE_KEY3_REG, self.EFUSE_PURPOSE_KEY3_SHIFT),
+            (self.EFUSE_PURPOSE_KEY4_REG, self.EFUSE_PURPOSE_KEY4_SHIFT),
+            (self.EFUSE_PURPOSE_KEY5_REG, self.EFUSE_PURPOSE_KEY5_SHIFT),
+        ][key_block]
+        return (self.read_reg(reg) >> shift) & 0x1F
+
+    def is_flash_encryption_key_valid(self):
+        # Need to see an AES-128 key
+        purposes = [
+            self.get_key_block_purpose(b) for b in range(self.EFUSE_MAX_KEY + 1)
+        ]
+
+        if any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes):
+            return True
+
+        return (
+            self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
+            >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
+        ) & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
 
     def check_spi_connection(self, spi_connection):
         if not set(spi_connection).issubset(set(range(0, 29))):

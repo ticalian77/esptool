@@ -51,7 +51,7 @@ version_check:
   rules:
     - if: '$CI_COMMIT_TAG != null'
   script:
-    - VERSION=$(esptool.py version | head -n 1)
+    - VERSION=$(esptool version | head -n 1)
     - |
       if [[ "$VERSION" != *"$CI_COMMIT_TAG" ]]
       then
@@ -94,6 +94,7 @@ host_tests:
     - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_image_info.py
     - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_modules.py
     - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_logger.py
+    - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_port_sorting.py
     # some .coverage files in sub-directories are not collected on some runners, move them firs
     - find . -mindepth 2 -type f -name ".coverage*" -print -exec mv --backup=numbered {} . \;
 
@@ -135,6 +136,7 @@ host_tests_latest_python:
     -  pytest ${CI_PROJECT_DIR}/test/test_image_info.py
     -  pytest ${CI_PROJECT_DIR}/test/test_modules.py
     -  pytest ${CI_PROJECT_DIR}/test/test_logger.py
+    -  pytest ${CI_PROJECT_DIR}/test/test_port_sorting.py
     -  pytest ${CI_PROJECT_DIR}/test/test_espefuse.py --chip esp32
 
 # A new job "host_test_hsm" is created for the test "test_espsecure_hsm.py" which runs an ubuntu image,
@@ -171,6 +173,11 @@ run_pre_commit_hooks:
   esptool.py --help
   espefuse.py --help
   espsecure.py --help
+  esp_rfc2217_server.py --help
+  esptool --help
+  espefuse --help
+  espsecure --help
+  esp_rfc2217_server --help
   python esptool.py --help
   python espefuse.py --help
   python espsecure.py --help
@@ -420,6 +427,8 @@ target_esp32p4:
   extends: .target_esptool_test
   tags:
     - esptool_esp32p4_target
+  variables:
+    ESPTOOL_TEST_FLASH_SIZE: "32"
   script:
     - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_esptool.py --port /dev/serial_ports/ESP32P4 --chip esp32p4 --baud 115200
 
@@ -430,6 +439,15 @@ target_esp32c5:
     - esptool_esp32c5_target
   script:
     - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_esptool.py --port /dev/serial_ports/ESP32C5 --chip esp32c5 --baud 115200
+
+target_esp32c5_32mb:
+  extends: .target_esptool_test
+  tags:
+    - esptool_esp32c5_32mb_target
+  variables:
+    ESPTOOL_TEST_FLASH_SIZE: "32"
+  script:
+    - coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_esptool.py --port /dev/serial_ports/ESP32C5_32MB --chip esp32c5 --baud 115200
 
 # ESP32C61
 target_esp32c61:
@@ -471,6 +489,7 @@ host_tests_windows:
     - python -m coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_modules.py
     - python -m coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_merge_bin.py
     - python -m coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_logger.py
+    - python -m coverage run --parallel-mode -m pytest ${CI_PROJECT_DIR}/test/test_port_sorting.py
 
 target_tests_windows:
   extends: .windows_test
@@ -509,7 +528,7 @@ combine_reports:
 
 build_docs:
   stage: build_docs
-  image: python:3.12-bookworm  # 3.12 is the last version with imghdr
+  image: python:3.13-bookworm
   tags:
     - build_docs
   rules:
@@ -529,11 +548,11 @@ build_docs:
   script:
     - pip install ".[docs]" --prefer-binary  # esptool is needed for the automatic API documentation generation
     - cd docs
-    - build-docs -l en -t {esp8266,esp32,esp32s2,esp32c3,esp32s3,esp32c2,esp32c6,esp32h2,esp32p4,esp32c5,esp32c61}
+    - build-docs -l en -t {esp8266,esp32,esp32s2,esp32c3,esp32s3,esp32c2,esp32c6,esp32h2,esp32p4,esp32c5,esp32c61,esp32h21,esp32h4}
 
 .deploy_docs_template:
   stage: deploy_docs
-  image: python:3.12-bookworm  # 3.12 is the last version with imghdr
+  image: python:3.13-bookworm
   tags:
     - deploy
   needs:

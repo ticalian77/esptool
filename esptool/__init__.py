@@ -31,7 +31,7 @@ __all__ = [
     "write_mem",
 ]
 
-__version__ = "4.8.1"
+__version__ = "5.1.0"
 
 import os
 import shlex
@@ -82,6 +82,7 @@ from esptool.targets import CHIP_DEFS, CHIP_LIST, ESP32ROM
 from esptool.util import (
     FatalError,
     NotImplementedInROMError,
+    check_deprecated_py_suffix,
     flash_size_bytes,
 )
 from itertools import chain, cycle, repeat
@@ -112,7 +113,7 @@ click.rich_click.STYLE_COMMANDS_TABLE_COLUMN_WIDTH_RATIO = (1, 3)
 # Option group definitions, used for grouping options in the help output
 # Similar to 'add_argument_group' from argparse
 click.rich_click.OPTION_GROUPS = {
-    "esptool.py merge-bin": [
+    "* merge-bin": [
         {
             "name": "UF2 options",
             "options": [
@@ -141,7 +142,7 @@ click.rich_click.OPTION_GROUPS = {
     ],
 }
 click.rich_click.COMMAND_GROUPS = {
-    "esptool.py": [
+    "*": [
         {
             "name": "Basic commands",
             "commands": [
@@ -267,7 +268,10 @@ def add_spi_flash_options(
 
 def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     # Check if we are writing/erasing/reading past 16MB boundary
-    if not (esp.IS_STUB and esp.CHIP_NAME == "ESP32-S3") and address + size > 0x1000000:
+    if (
+        not (esp.IS_STUB and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4", "ESP32-C5"])
+        and address + size > 0x1000000
+    ):
         raise FatalError(
             f"Can't access flash regions larger than 16MB "
             f"(set size {size:#x} from address {address:#010x} goes past 16MB "
@@ -294,7 +298,7 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     cls=Group,
     no_args_is_help=True,
     context_settings=dict(help_option_names=["-h", "--help"], max_content_width=120),
-    help=f"esptool.py v{__version__} - serial utility for flashing, provisioning, "
+    help=f"esptool v{__version__} - serial utility for flashing, provisioning, "
     "and interacting with Espressif SoCs.",
 )
 @click.option(
@@ -307,6 +311,7 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 @click.option(
     "--port",
     "-p",
+    type=click.Path(),
     default=os.environ.get("ESPTOOL_PORT", None),
     help="Serial port device.",
 )
@@ -350,8 +355,8 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 # is implied globally
 @click.option(
     "--stub-version",
-    default=os.environ.get("ESPTOOL_STUB_VERSION", StubFlasher.STUB_SUBDIRS[0]),
-    type=click.Choice(StubFlasher.STUB_SUBDIRS),
+    default=os.environ.get("ESPTOOL_STUB_VERSION", "1"),
+    type=click.Choice(["1", "2"]),
     # not a public option and is not subject to the semantic versioning policy
     hidden=True,
 )
@@ -359,7 +364,19 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     "--trace",
     "-t",
     is_flag=True,
-    help="Enable trace-level output of esptool.py interactions.",
+    help="Enable trace-level output of esptool interactions.",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Print all output, disable collapsing output stages.",
+)
+@click.option(
+    "--silent",
+    "-s",
+    is_flag=True,
+    help="Silence all output except for errors.",
 )
 @click.option(
     "--override-vddsdio",
@@ -380,15 +397,27 @@ def cli(
 ):
     ctx.ensure_object(dict)
     ctx.obj.update(kwargs)
+    if ctx.obj["verbose"] and ctx.obj["silent"]:
+        raise FatalError(
+            "Cannot use both --verbose and --silent options at the same time."
+        )
+    if ctx.obj["trace"] and ctx.obj["silent"]:
+        raise FatalError(
+            "Cannot use both --trace and --silent options at the same time."
+        )
+    if ctx.obj["verbose"]:
+        log.set_verbosity("verbose")
+    elif ctx.obj["silent"]:
+        log.set_verbosity("silent")
     ctx.obj["invoked_subcommand"] = ctx.invoked_subcommand
     ctx.obj["esp"] = getattr(ctx, "esp", None)
-    log.print(f"esptool.py v{__version__}")
+    log.print(f"esptool v{__version__}")
     load_config_file(verbose=True)
 
 
 def prepare_esp_object(ctx):
     """Prepare ESP object for operation"""
-    StubFlasher.set_preferred_stub_subdir(ctx.obj["stub_version"])
+    StubFlasher.set_stub_subdir(ctx.obj["stub_version"])
     # Commands that require an ESP object (flash read/write, etc.)
     # 1) Get the ESP object
     #######################
@@ -550,10 +579,15 @@ def prepare_esp_object(ctx):
 @cli.command("load-ram")
 @click.argument("filename", type=AutoHex2BinType())
 @click.pass_context
-def load_ram_cli(ctx, filename):
+def load_ram_cli(ctx, filename: list[tuple[int | None, t.IO[bytes]]]):
     """Download an image to RAM and execute."""
+    if len(filename) > 1:
+        raise FatalError(
+            "Merged binary image detected. "
+            "Only one file can be specified for the load-ram command."
+        )
     prepare_esp_object(ctx)
-    load_ram(ctx.obj["esp"], filename)
+    load_ram(ctx.obj["esp"], filename[0][1].name)
 
 
 @cli.command("dump-mem")
@@ -667,9 +701,13 @@ def run_cli(ctx):
 @cli.command("image-info")
 @click.argument("filename", type=AutoHex2BinType())
 @click.pass_context
-def image_info_cli(ctx, filename):
+def image_info_cli(ctx, filename: list[tuple[int | None, t.IO[bytes]]]):
     """Print information about a firmware image (bootloader or application)."""
-    image_info(filename, chip=None if ctx.obj["chip"] == "auto" else ctx.obj["chip"])
+    chip = None if ctx.obj["chip"] == "auto" else ctx.obj["chip"]
+    if len(filename) == 1:
+        image_info(filename[0][1].name, chip=chip)
+    else:
+        image_info(filename, chip=chip)  # type: ignore
 
 
 @cli.command("elf2image")
@@ -747,10 +785,10 @@ def image_info_cli(ctx, filename):
 )
 @click.option(
     "--pad-to-size",
-    type=int,
+    type=str,
     default=None,
     help="The block size to pad the final binary image to. "
-    "Value 0xFF is used for padding.",
+    "Value 0xFF is used for padding. Supports MB, KB suffixes.",
 )
 @click.option(
     "--ram-only-header",
@@ -892,11 +930,6 @@ def erase_flash_cli(ctx, force, **kwargs):
 )
 @click.argument("address", type=AnyIntType())
 @click.argument("size", type=AutoSizeType())
-@click.option(
-    "--force",
-    is_flag=True,
-    help="Erase region even if security features are enabled. Use with caution!",
-)
 @add_spi_connection_arg
 @click.pass_context
 def erase_region_cli(ctx, address, size, force, **kwargs):
@@ -995,7 +1028,11 @@ def main(argv: list[str] | None = None, esp: ESPLoader | None = None):
     returned by get_default_connected_device()
     """
     args = expand_file_arguments(argv or sys.argv[1:])
-    cli(args=args, esp=esp)
+    try:
+        cli(args=args, esp=esp)
+    except SystemExit as e:
+        if e.code != 0:
+            raise
 
 
 def get_port_list(
@@ -1007,13 +1044,13 @@ def get_port_list(
     if list_ports is None:
         raise FatalError(
             "Listing all serial ports is currently not available. "
-            "Please try to specify the port when running esptool.py or update "
+            "Please try to specify the port when running esptool or update "
             "the pyserial package to the latest version."
         )
     ports = []
     for port in list_ports.comports():
         if sys.platform == "darwin" and port.device.endswith(
-            ("Bluetooth-Incoming-Port", "wlan-debug")
+            ("Bluetooth-Incoming-Port", "wlan-debug", "cu.debug-console")
         ):
             continue
         if vids and (port.vid is None or port.vid not in vids):
@@ -1029,8 +1066,52 @@ def get_port_list(
             or all(serial not in port.serial_number for serial in serials)
         ):
             continue
-        ports.append(port.device)
-    return sorted(ports)
+        ports.append((port.device, port.vid))
+
+    # Constants for sorting optimization
+    ESPRESSIF_VID = 0x303A
+    LINUX_DEVICE_PATTERNS = ("ttyUSB", "ttyACM")
+    MACOS_DEVICE_PATTERNS = ("usbserial", "usbmodem")
+
+    def _port_sort_key_linux(port_info):
+        device, vid = port_info
+
+        if vid == ESPRESSIF_VID:
+            return (3, device)
+
+        if any(pattern in device for pattern in LINUX_DEVICE_PATTERNS):
+            return (2, device)
+
+        return (1, device)
+
+    def _port_sort_key_macos(port_info):
+        device, vid = port_info
+
+        if vid == ESPRESSIF_VID:
+            return (3, device)
+
+        if any(pattern in device for pattern in MACOS_DEVICE_PATTERNS):
+            return (2, device)
+
+        return (1, device)
+
+    def _port_sort_key_windows(port_info):
+        device, vid = port_info
+
+        if vid == ESPRESSIF_VID:
+            return (2, device)
+
+        return (1, device)
+
+    if sys.platform == "win32":
+        key_func = _port_sort_key_windows
+    elif sys.platform == "darwin":
+        key_func = _port_sort_key_macos
+    else:
+        key_func = _port_sort_key_linux
+
+    sorted_port_info = sorted(ports, key=key_func)
+    return [device for device, _ in sorted_port_info]
 
 
 def expand_file_arguments(argv: list[str]) -> list[str]:
@@ -1045,13 +1126,13 @@ def expand_file_arguments(argv: list[str]) -> list[str]:
     for arg in argv:
         if arg.startswith("@"):
             expanded = True
-            with open(arg[1:], "r") as f:
+            with open(arg[1:]) as f:
                 for line in f.readlines():
                     new_args += shlex.split(line)
         else:
             new_args.append(arg)
     if expanded:
-        log.print(f"esptool.py {' '.join(new_args)}")
+        log.print(f"esptool {' '.join(new_args)}")
         return new_args
     return argv
 
@@ -1082,12 +1163,7 @@ def connect_loop(
                 log.print("")
             esp.connect(before)
             return esp
-        except (
-            FatalError,
-            serial.serialutil.SerialException,
-            IOError,
-            OSError,
-        ) as err:
+        except (FatalError, serial.serialutil.SerialException, OSError) as err:
             if esp and esp._port:
                 esp._port.close()
             esp = None
@@ -1136,6 +1212,7 @@ def get_default_connected_device(
 
 
 def _main():
+    check_deprecated_py_suffix(__name__)
     try:
         main()
     except FatalError as e:

@@ -1,10 +1,10 @@
-{IDF_TARGET_FLASH_FREQ_F:default="80", esp32c2="60", esp32h2="48"}
+{IDF_TARGET_FLASH_FREQ_F:default="80", esp32c2="60", esp32h2="48", esp32h21="48", esp32h4="48"}
 
-{IDF_TARGET_FLASH_FREQ_0:default="40", esp32c2="30", esp32h2="24"}
+{IDF_TARGET_FLASH_FREQ_0:default="40", esp32c2="30", esp32h2="24", esp32h21="24", esp32h4="24"}
 
-{IDF_TARGET_FLASH_FREQ_1:default="26", esp32c2="20", esp32h2="16"}
+{IDF_TARGET_FLASH_FREQ_1:default="26", esp32c2="20", esp32h2="16", esp32h21="16", esp32h4="16"}
 
-{IDF_TARGET_FLASH_FREQ_2:default="20", esp32c2="15", esp32h2="12"}
+{IDF_TARGET_FLASH_FREQ_2:default="20", esp32c2="15", esp32h2="12", esp32h21="12", esp32h4="12"}
 
 {IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000"}
 
@@ -14,7 +14,7 @@
 Firmware Image Format
 =====================
 
-This is technical documentation for the firmware image format used by the ROM bootloader. These are the images created by ``esptool.py elf2image``.
+This is technical documentation for the firmware image format used by the ROM bootloader. These are the images created by ``esptool elf2image``.
 
 .. only:: esp8266
 
@@ -103,7 +103,7 @@ The image header is 8 bytes long:
         Flash frequency with value ``0`` can mean either 80MHz or 40MHz based on MSPI clock source mode.
 
 
-.. only:: esp32c5 or esp32c61
+.. only:: esp32c5 or esp32c61 or esp32h21 or esp32h4
 
     +--------+------------------------------------------------------------------------------------------------+
     | Byte   | Description                                                                                    |
@@ -121,7 +121,7 @@ The image header is 8 bytes long:
     | 4-7    | Entry point address                                                                            |
     +--------+------------------------------------------------------------------------------------------------+
 
-.. only:: not (esp8266 or esp32c6 or esp32s3 or esp32s2 or esp32p4 or esp32c5 or esp32c61)
+.. only:: not (esp8266 or esp32c6 or esp32s3 or esp32s2 or esp32p4 or esp32c5 or esp32c61 or esp32h21 or esp32h4)
 
     +--------+------------------------------------------------------------------------------------------------+
     | Byte   | Description                                                                                    |
@@ -140,10 +140,10 @@ The image header is 8 bytes long:
     +--------+------------------------------------------------------------------------------------------------+
 
 
-``esptool.py`` overrides the 2nd and 3rd (counted from 0) bytes according to the SPI flash info provided through the command line options (see :ref:`flash-modes`).
+``esptool`` overrides the 2nd and 3rd (counted from 0) bytes according to the SPI flash info provided through the command line options (see :ref:`flash-modes`).
 These bytes are only overridden if this is a bootloader image (an image written to a correct bootloader offset of {IDF_TARGET_BOOTLOADER_OFFSET}).
 In this case, the appended SHA256 digest, which is a cryptographic hash used to verify the integrity of the image, is also updated to reflect the header changes.
-Generating images without SHA256 digest can be achieved by running ``esptool.py elf2image`` with the ``--dont-append-digest`` argument.
+Generating images without SHA256 digest can be achieved by running ``esptool elf2image`` with the ``--dont-append-digest`` argument.
 
 .. only:: esp8266
 

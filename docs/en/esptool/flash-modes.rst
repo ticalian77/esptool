@@ -1,10 +1,10 @@
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000"}
+{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000", esp32h2="0x0", esp32h21="0x0", esp32h4="0x2000"}
 
-{IDF_TARGET_FLASH_FREQ_F:default="80", esp32c2="60", esp32h2="48"}
+{IDF_TARGET_FLASH_FREQ_F:default="80", esp32c2="60", esp32h2="48", esp32h21="48", esp32h4="48"}
 
-{IDF_TARGET_FLASH_FREQ_0:default="40", esp32c2="30", esp32h2="24"}
+{IDF_TARGET_FLASH_FREQ_0:default="40", esp32c2="30", esp32h2="24", esp32h21="24", esp32h4="24"}
 
-{IDF_TARGET_FLASH_FREQ:default="``40m``, ``26m``, ``20m``, ``80m``", esp32c2="``30m``, ``20m``, ``15m``, ``60m``", esp32h2="``24m``, ``16m``, ``12m``, ``48m``", esp32c6="``40m``, ``20m``, ``80m``, esp32c5="``40m``, ``20m``, ``80m``, esp32c61="``40m``, ``20m``, ``80m``"}
+{IDF_TARGET_FLASH_FREQ:default="``40m``, ``26m``, ``20m``, ``80m``", esp32c2="``30m``, ``20m``, ``15m``, ``60m``", esp32h2="``24m``, ``16m``, ``12m``, ``48m``", esp32c6="``40m``, ``20m``, ``80m``, esp32c5="``40m``, ``20m``, ``80m``, esp32c61="``40m``, ``20m``, ``80m``", esp32h21="``24m``, ``16m``, ``12m``, ``48m``", esp32h4="``24m``, ``16m``, ``12m``, ``48m``"}
 
 
 .. _flash-modes:
@@ -19,7 +19,7 @@ To override these values, the options ``--flash-mode``, ``--flash-size`` and/or 
 
 ::
 
-    esptool.py --port /dev/ttyUSB1 write-flash --flash-mode dio --flash-size 4MB 0x0 bootloader.bin
+    esptool --port /dev/ttyUSB1 write-flash --flash-mode dio --flash-size 4MB 0x0 bootloader.bin
 
 These options are only consulted when flashing a bootable image to an {IDF_TARGET_NAME} at offset {IDF_TARGET_BOOTLOADER_OFFSET}. These are addresses used by the ROM bootloader to load from flash. When flashing at all other offsets, these arguments are not used.
 
@@ -56,7 +56,7 @@ Size of the SPI flash, given in megabytes.
 
     Valid values are: ``keep``, ``detect``, ``256KB``, ``512KB``, ``1MB``, ``2MB``, ``4MB``, ``2MB-c1``, ``4MB-c1``, ``8MB``, ``16MB``
 
-.. only:: esp32 or esp32c3 or esp32c6 or esp32c2 or esp32h2 or esp32c5 or esp32c61
+.. only:: esp32 or esp32c3 or esp32c6 or esp32c2 or esp32h2 or esp32c5 or esp32c61 or esp32h21 or esp32h4
 
     Valid values are: ``keep``, ``detect``, ``1MB``, ``2MB``, ``4MB``, ``8MB``, ``16MB``
 
@@ -74,7 +74,7 @@ Size of the SPI flash, given in megabytes.
 
 The default ``--flash-size`` parameter is ``keep``. This means that if no ``--flash-size`` argument is passed when flashing a bootloader, the value in the bootloader .bin file header is kept instead of detecting the actual flash size and updating the header.
 
-To enable automatic flash size detection based on SPI flash ID, add the argument ``esptool.py [...] write-flash [...] -fs detect``. If detection fails, a warning is printed and a default value of of ``4MB`` (4 megabytes) is used.
+To enable automatic flash size detection based on SPI flash ID, add the argument ``esptool [...] write-flash [...] -fs detect``. If detection fails, a warning is printed and a default value of of ``4MB`` (4 megabytes) is used.
 
 If flash size is not successfully detected, you can find the flash size by using the ``flash-id`` command and then looking up the ID from the output (see :ref:`Read SPI flash id <read-spi-flash-id>`).
 Alternatively, read off the silkscreen labelling of the flash chip and search for its datasheet.

@@ -7,9 +7,10 @@
 import re
 
 from bitstring import BitStream
+from esptool.logger import log
 
 
-class EmulateEfuseControllerBase(object):
+class EmulateEfuseControllerBase:
     """The class for virtual efuse operations. Using for HOST_TEST."""
 
     CHIP_NAME = ""
@@ -18,6 +19,7 @@ class EmulateEfuseControllerBase(object):
     Blocks = None
     Fields = None
     REGS = None
+    USB_JTAG_SERIAL_PID = 0x1001
 
     def __init__(self, efuse_file=None, debug=False):
         self.debug = debug
@@ -75,6 +77,9 @@ class EmulateEfuseControllerBase(object):
         blk = self.Blocks.get(self.Blocks.BLOCKS[block])
         self.write_reg(blk.wr_addr + (4 * n), value)
 
+    def _get_pid(self):
+        return -1
+
     """ << esptool method end """
 
     def handle_writing_event(self, addr, value):
@@ -96,7 +101,7 @@ class EmulateEfuseControllerBase(object):
                     continue
             data = self.read_block(blk.id, wr_regs=True)
             if self.debug:
-                print(blk.name, data.hex)
+                log.print(blk.name, data.hex)
             plain_data = self.handle_coding_scheme(blk, data)
             plain_data = self.check_wr_protection_area(blk.id, plain_data)
             self.update_block(blk, plain_data)

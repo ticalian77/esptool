@@ -1,4 +1,4 @@
-# Unit tests (really integration tests) for esptool.py using the pytest framework
+# Unit tests (really integration tests) for esptool using the pytest framework
 # Uses a device connected to the serial port.
 #
 # RUNNING THIS WILL MESS UP THE DEVICE'S SPI FLASH CONTENTS
@@ -8,7 +8,7 @@
 # Run with a physical connection to a chip:
 #  - `pytest test_esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 115200`
 #
-# where  - --port       - a serial port for esptool.py operation
+# where  - --port       - a serial port for esptool operation
 #        - --chip       - ESP chip name
 #        - --baud       - baud rate
 #        - --with-trace - trace all interactions (True or False)
@@ -73,17 +73,17 @@ import serial
 
 TEST_DIR = os.path.abspath(os.path.dirname(__file__))
 
-print("Running esptool.py tests...")
+print("Running esptool tests...")
 
 
-class ESPRFC2217Server(object):
+class ESPRFC2217Server:
     """Creates a virtual serial port accessible through rfc2217 port."""
 
     def __init__(self, rfc2217_port=None):
         self.port = rfc2217_port or self.get_free_port()
         self.cmd = [
             sys.executable,
-            os.path.join(TEST_DIR, "..", "esp_rfc2217_server.py"),
+            os.path.join(TEST_DIR, "..", "esp_rfc2217_server"),
             "-p",
             str(self.port),
             arg_port,
@@ -152,7 +152,9 @@ class EsptoolTestCase:
             print(e.output)
             raise e
 
-    def run_esptool(self, args, baud=None, chip=None, port=None, preload=True):
+    def run_esptool(
+        self, args, baud=arg_baud, chip=arg_chip, port=arg_port, preload=True
+    ):
         """
         Run esptool with the specified arguments. --chip, --port and --baud
         are filled in automatically from the command line.
@@ -164,8 +166,8 @@ class EsptoolTestCase:
         This is needed in USB-JTAG/Serial mode to disable the
         RTC watchdog, which causes the port to periodically disappear.
 
-        Returns output from esptool.py as a string if there is any.
-        Raises an exception if esptool.py fails.
+        Returns output from esptool as a string if there is any.
+        Raises an exception if esptool fails.
         """
 
         def run_esptool_process(cmd):
@@ -189,12 +191,12 @@ class EsptoolTestCase:
             esptool = ["-m", "esptool"]
         trace_arg = ["--trace"] if arg_trace else []
         base_cmd = [sys.executable] + esptool + trace_arg
-        if chip or arg_chip is not None and chip != "auto":
-            base_cmd += ["--chip", chip or arg_chip]
-        if port or arg_port is not None:
-            base_cmd += ["--port", port or arg_port]
-        if baud or arg_baud is not None:
-            base_cmd += ["--baud", str(baud or arg_baud)]
+        if chip and chip != "auto":
+            base_cmd += ["--chip", chip]
+        if port:
+            base_cmd += ["--port", port]
+        if baud:
+            base_cmd += ["--baud", str(baud)]
         usb_jtag_serial_reset = ["--before", "usb-reset"] if arg_preload_port else []
         usb_otg_dont_reset = (
             ["--after", "no-reset-stub"] if "ESPTOOL_TEST_USB_OTG" in os.environ else []
@@ -206,6 +208,7 @@ class EsptoolTestCase:
         # Preload a dummy binary to disable the RTC watchdog, needed in USB-JTAG/Serial
         if (
             preload
+            and port
             and arg_preload_port
             and arg_chip
             in [
@@ -240,15 +243,15 @@ class EsptoolTestCase:
 
         return output
 
-    def run_esptool_error(self, args, baud=None, chip=None):
+    def run_esptool_error(self, args, baud=arg_baud, chip=arg_chip, port=arg_port):
         """
-        Run esptool.py similar to run_esptool, but expect an error.
+        Run esptool similar to run_esptool, but expect an error.
 
         Verifies the error is an expected error not an unhandled exception,
-        and returns the output from esptool.py as a string.
+        and returns the output from esptool as a string.
         """
         with pytest.raises(subprocess.CalledProcessError) as fail:
-            self.run_esptool(args, baud, chip)
+            self.run_esptool(args, baud, chip, port)
         failure = fail.value
         assert failure.returncode in [1, 2]  # UnsupportedCmdError and FatalError codes
         return failure.output.decode("utf-8")
@@ -323,7 +326,7 @@ class EsptoolTestCase:
         # "Hello world" data without unwanted chip reset.
         with serial.serial_for_url(arg_port, arg_baud, rtscts=True) as p:
             p.timeout = 5
-            output = p.read(100)
+            output = p.read(200)
             print(f"Output: {output}")
             assert any(item in output for item in expected_out)
 
@@ -334,8 +337,8 @@ class TestFlashEncryption(EsptoolTestCase):
         try:
             esp = esptool.ESP32ROM(arg_port)
             esp.connect()
-            efuses, _ = espefuse.get_efuses(esp=esp)
-            blk1_rd_en = efuses["BLOCK1"].is_readable()
+            efuse_cls = espefuse.init_commands(esp=esp)
+            blk1_rd_en = efuse_cls.efuses["BLOCK1"].is_readable()
             return not blk1_rd_en
         finally:
             esp._port.close()
@@ -374,8 +377,8 @@ class TestFlashEncryption(EsptoolTestCase):
         )
         self.run_esptool("read-flash 0x10000 192 images/read_encrypted_flash.bin")
         self.run_espsecure(
-            "encrypt_flash_data --address 0x10000 --keyfile images/aes_key.bin "
-            "--flash_crypt_conf 0 --output images/local_enc.bin "
+            "encrypt-flash-data --address 0x10000 --keyfile images/aes_key.bin "
+            "--flash-crypt-conf 0 --output images/local_enc.bin "
             "images/ram_helloworld/helloworld-esp32.bin"
         )
 
@@ -413,8 +416,8 @@ class TestFlashEncryption(EsptoolTestCase):
         )
         self.run_esptool("read-flash 0x10000 192 images/read_encrypted_flash.bin")
         self.run_espsecure(
-            "encrypt_flash_data --address 0x10000 --keyfile images/aes_key.bin "
-            "--flash_crypt_conf 0 --output images/local_enc.bin "
+            "encrypt-flash-data --address 0x10000 --keyfile images/aes_key.bin "
+            "--flash-crypt-conf 0 --output images/local_enc.bin "
             "images/ram_helloworld/helloworld-esp32.bin"
         )
 
@@ -442,7 +445,8 @@ class TestFlashing(EsptoolTestCase):
     @pytest.mark.skipif(arg_chip != "esp32", reason="Don't need to test multiple times")
     def test_short_flash_deprecated(self):
         out = self.run_esptool(
-            "--before default_reset write_flash 0x0 images/one_kb.bin --flash_size keep"
+            "--before default_reset write_flash 0x0 images/one_kb.bin "
+            "--flash_size keep --flash_mode=keep"
         )
         assert (
             "Deprecated: Choice 'default_reset' for option '--before' is deprecated. "
@@ -451,6 +455,10 @@ class TestFlashing(EsptoolTestCase):
         assert (
             "Deprecated: Option '--flash_size' is deprecated. "
             "Use '--flash-size' instead." in out
+        )
+        assert (
+            "Deprecated: Option '--flash_mode' is deprecated. "
+            "Use '--flash-mode' instead." in out
         )
         assert (
             "Deprecated: Command 'write_flash' is deprecated. "
@@ -544,6 +552,37 @@ class TestFlashing(EsptoolTestCase):
         offset2 = offset & 0xFFFFFF
         self.run_esptool("write-flash {} images/one_kb_all_ef.bin".format(hex(offset2)))
         self.verify_readback(offset, 1 * 1024 * 1024, "images/one_mb.bin")
+
+    @pytest.mark.skipif(
+        int(os.getenv("ESPTOOL_TEST_FLASH_SIZE", "0")) < 32, reason="needs 32MB flash"
+    )
+    def test_verify_erase_between_32M_flash(self):
+        """
+        Test writing two 1KB binaries with random data after 16MB boundary and
+        verify hashes.
+        """
+        BASE_OFFSET = 16 * 1024 * 1024  # 16MB boundary
+        FILE_SIZE = 1 * 1024  # 1KB
+
+        binary1 = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        binary2 = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+
+        try:
+            for _ in range(FILE_SIZE):
+                binary1.write(struct.pack("B", random.randrange(0, 256)))
+                binary2.write(struct.pack("B", random.randrange(0, 256)))
+            binary1.close()
+            binary2.close()
+
+            output1 = self.run_esptool(f"write-flash {BASE_OFFSET} {binary1.name}")
+            assert "Hash of data verified" in output1
+
+            output2 = self.run_esptool(f"write-flash {BASE_OFFSET} {binary2.name}")
+            assert "Hash of data verified" in output2
+
+        finally:
+            os.unlink(binary1.name)
+            os.unlink(binary2.name)
 
     def test_correct_offset(self):
         """Verify writing at an offset actually writes to that offset."""
@@ -1075,19 +1114,14 @@ class TestStubReuse(EsptoolTestCase):
         )  # do sync before (without reset it talks to the flasher stub)
         assert "Manufacturer:" in res
 
-    @pytest.mark.skipif(arg_chip != "esp8266", reason="ESP8266 only")
     def test_stub_reuse_without_synchronization(self):
         """
         Keep the flasher stub running and reuse it the next time
         without synchronization.
-
-        Synchronization is necessary for chips where the ROM bootloader has different
-        status length in comparison to the flasher stub.
-        Therefore, this is ESP8266 only test.
         """
         res = self.run_esptool("--after no-reset-stub flash-id")
         assert "Manufacturer:" in res
-        res = self.run_esptool("--before no-reset-no-sync flash-id")
+        res = self.run_esptool("--before no-reset-no-sync flash-id", preload=False)
         assert "Manufacturer:" in res
 
 
@@ -1195,15 +1229,24 @@ class TestMemoryOperations(EsptoolTestCase):
         assert "to 'memout.bin'" in output
         os.remove("memout.bin")
 
-    def test_memory_write(self):
-        output = self.run_esptool("write-mem 0x400C0000 0xabad1dea 0x0000ffff")
+    @pytest.fixture
+    def test_address(self):
+        """
+        Return a RAM address suitable for memory read/write tests.
+        ESP32-P4 has different RAM ranges. Address 0x4FF90000 is just
+        inside the range and unused.
+        """
+        return 0x4FF90000 if arg_chip == "esp32p4" else 0x400C0000
+
+    def test_memory_write(self, test_address):
+        output = self.run_esptool(f"write-mem {test_address:#X} 0xabad1dea 0x0000ffff")
         assert "Wrote 0xabad1dea" in output
         assert "mask 0x0000ffff" in output
-        assert "to 0x400c0000" in output
+        assert f"to {test_address:#x}" in output
 
-    def test_memory_read(self):
-        output = self.run_esptool("read-mem 0x400C0000")
-        assert "0x400c0000 =" in output
+    def test_memory_read(self, test_address):
+        output = self.run_esptool(f"read-mem {test_address:#X}")
+        assert f"{test_address:#x} =" in output
 
 
 class TestKeepImageSettings(EsptoolTestCase):
@@ -1211,7 +1254,7 @@ class TestKeepImageSettings(EsptoolTestCase):
 
     @classmethod
     def setup_class(self):
-        super(TestKeepImageSettings, self).setup_class()
+        super().setup_class()
         self.BL_IMAGE = f"images/bootloader_{arg_chip}.bin"
         self.flash_offset = esptool.CHIP_DEFS[arg_chip].BOOTLOADER_FLASH_OFFSET
         with open(self.BL_IMAGE, "rb") as f:
@@ -1400,6 +1443,82 @@ class TestAutoDetect(EsptoolTestCase):
     def test_auto_detect(self):
         output = self.run_esptool("chip-id", chip="auto")
         self._check_output(output)
+
+
+class TestChipDetectionValidation(EsptoolTestCase):
+    """Test the chip detection validation logic in ESPLoader.connect() method.
+
+    This tests the section that validates if the connected chip matches the
+    specified chip argument, covering scenarios with:
+    - Chips that use chip ID detection (ESP32-S3 and later)
+    - Chips that use magic value detection (ESP8266, ESP32, ESP32-S2)
+    - ESP32-S2 in Secure Download Mode (SDM)
+    - Correct chip argument vs wrong chip argument detection
+    """
+
+    def _find_different_chip(self, chip_name, detection_method):
+        """Find a different chip from the specified chip name
+        based on the detection method, except ESP32-S2.
+
+        Args:
+            chip_name: The name of the chip to find a different chip for.
+            detection_method: The detection method to use.
+
+        Returns:
+            The name of the different chip.
+        """
+        for chip in esptool.CHIP_DEFS:
+            if chip != chip_name and chip != "esp32s2":
+                if (
+                    detection_method == "chip_id"
+                    and not esptool.CHIP_DEFS[chip].USES_MAGIC_VALUE
+                ):
+                    if (
+                        esptool.CHIP_DEFS[chip].IMAGE_CHIP_ID
+                        != esptool.CHIP_DEFS[chip_name].IMAGE_CHIP_ID
+                    ):
+                        return chip
+                elif (
+                    detection_method == "magic_value"
+                    and esptool.CHIP_DEFS[chip].USES_MAGIC_VALUE
+                ):
+                    if (
+                        esptool.CHIP_DEFS[chip].MAGIC_VALUE
+                        != esptool.CHIP_DEFS[chip_name].MAGIC_VALUE
+                    ):
+                        return chip
+
+    @pytest.mark.quick_test
+    def test_chips_with_chip_id_detection(self):
+        # First verify the correct chip works
+        output = self.run_esptool(f"--chip {arg_chip} flash-id")
+        assert "Stub flasher running." in output
+
+        # Find a different chip with different chip ID to test mismatch detection
+        different_chip_id = self._find_different_chip(arg_chip, "chip_id")
+        error_output = self.run_esptool_error(f"--chip {different_chip_id} flash-id")
+        assert (
+            f"This chip is {arg_chip.upper()}, not {different_chip_id.upper()}."
+            in error_output
+            or "Wrong chip argument?" in error_output
+        )
+
+        # Find a different chip with different magic value to test mismatch detection
+        different_chip_magic = self._find_different_chip(arg_chip, "magic_value")
+        error_output = self.run_esptool_error(f"--chip {different_chip_magic} flash-id")
+        assert (
+            f"This chip is {arg_chip.upper()}, not {different_chip_magic.upper()}."
+            in error_output
+            or "Wrong chip argument?" in error_output
+        )
+
+        if arg_chip != "esp32s2":
+            # ESP32-S2 is special case that has security info, but not chip ID
+            error_output = self.run_esptool_error("--chip esp32s2 flash-id")
+            assert (
+                f"This chip is {arg_chip.upper()}, not ESP32-S2." in error_output
+                or "Wrong chip argument?" in error_output
+            )
 
 
 class TestUSBMode(EsptoolTestCase):
@@ -1815,3 +1934,55 @@ class TestESPObjectOperations(EsptoolTestCase):
         assert "Checksum: 0x83 (valid)" in output
         assert "Wrote 0x2400 bytes to file 'output.bin'" in output
         assert esptool.__version__ in output
+
+
+@pytest.mark.host_test
+class TestOldScripts:
+    def test_esptool_py(self):
+        output = subprocess.check_output(["esptool.py", "-h"])
+        decoded = output.decode("utf-8")
+        assert "esptool.py" in decoded
+        assert "DEPRECATED" in decoded
+
+    def test_espefuse_py(self):
+        output = subprocess.check_output(["espefuse.py", "-h"])
+        decoded = output.decode("utf-8")
+        assert "espefuse.py" in decoded
+        assert "DEPRECATED" in decoded
+
+    def test_espsecure_py(self):
+        output = subprocess.check_output(["espsecure.py", "-h"])
+        decoded = output.decode("utf-8")
+        assert "espsecure.py" in decoded
+        assert "DEPRECATED" in decoded
+
+    def test_esp_rfc2217_server_py(self):
+        output = subprocess.check_output(["esp_rfc2217_server.py", "-h"])
+        decoded = output.decode("utf-8")
+        assert "esp_rfc2217_server.py" in decoded
+        assert "DEPRECATED" in decoded
+
+
+@pytest.mark.host_test
+class TestPortFilter(EsptoolTestCase):
+    def test_port_filter_name(self):
+        """Test CLI with --port-filter non-existent name option"""
+        output = self.run_esptool_error(
+            "--port-filter name=NonExistentChip flash-id", port=None
+        )
+        # The command should fail due to no device found, not due to parsing error
+        assert "Option --port-filter argument key not recognized" not in output
+        # Should fail with device connection error instead
+        assert "Found 0 serial ports..." in output
+
+    def test_port_filter_invalid_key_error(self):
+        """Test CLI with invalid --port-filter key still shows correct error"""
+        output = self.run_esptool_error(
+            "--port-filter invalidkey=123 flash-id", port=None
+        )
+        assert "Option --port-filter argument key not recognized" in output
+
+    def test_port_filter_missing_equal_sign(self):
+        """Test CLI with missing equal sign in --port-filter option"""
+        output = self.run_esptool_error("--port-filter name123 flash-id", port=None)
+        assert "Option --port-filter argument must consist of key=value." in output

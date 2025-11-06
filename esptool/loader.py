@@ -53,7 +53,7 @@ except ImportError:
 try:
     if "serialization" in serial.__doc__ and "deserialization" in serial.__doc__:
         raise ImportError(
-            "esptool.py depends on pySerial, but there is a conflict with a currently "
+            "esptool depends on pySerial, but there is a conflict with a currently "
             "installed package named 'serial'.\n"
             "You may work around this by 'pip uninstall serial; pip install pyserial' "
             "but this may break other installed Python software "
@@ -71,7 +71,7 @@ try:
 except ImportError:
     log.error(
         f"The installed version ({serial.VERSION}) of pySerial appears to be too old "
-        f"for esptool.py (Python interpreter {sys.executable}). "
+        f"for esptool (Python interpreter {sys.executable}). "
         "Check the documentation for installation instructions."
     )
     raise
@@ -157,10 +157,12 @@ def stub_and_esp32_function_only(func):
 class StubFlasher:
     STUB_DIR = os.path.join(os.path.dirname(__file__), "targets", "stub_flasher")
     # directories will be searched in the order of STUB_SUBDIRS
-    STUB_SUBDIRS = ["1", "2"]
+    STUB_SUBDIRS = ["1"]
 
-    def __init__(self, chip_name):
-        with open(self.get_json_path(chip_name)) as json_file:
+    def __init__(self, target):
+        json_name = target.STUB_CLASS.stub_json_name(target)
+
+        with open(self._get_json_path(json_name, target.CHIP_NAME)) as json_file:
             stub = json.load(json_file)
 
         self.text = base64.b64decode(stub["text"])
@@ -176,10 +178,9 @@ class StubFlasher:
 
         self.bss_start = stub.get("bss_start")
 
-    def get_json_path(self, chip_name):
-        chip_name = strip_chip_name(chip_name)
+    def _get_json_path(self, json_name, chip_name):
         for i, subdir in enumerate(self.STUB_SUBDIRS):
-            json_path = os.path.join(self.STUB_DIR, subdir, f"{chip_name}.json")
+            json_path = os.path.join(self.STUB_DIR, subdir, json_name)
             if os.path.exists(json_path):
                 if i:
                     log.warning(
@@ -194,13 +195,11 @@ class StubFlasher:
             )
 
     @classmethod
-    def set_preferred_stub_subdir(cls, subdir):
-        if subdir in cls.STUB_SUBDIRS:
-            cls.STUB_SUBDIRS.remove(subdir)
-            cls.STUB_SUBDIRS.insert(0, subdir)
+    def set_stub_subdir(cls, subdir):
+        cls.STUB_SUBDIRS = [subdir]
 
 
-class ESPLoader(object):
+class ESPLoader:
     """Base class providing access to ESP ROM & software stub bootloaders.
     Subclasses provide ESP8266 & ESP32 Family specific functionality.
 
@@ -293,9 +292,6 @@ class ESPLoader(object):
     IROM_MAP_START = 0x40200000
     IROM_MAP_END = 0x40300000
 
-    # The number of bytes in the UART response that signify command status
-    STATUS_BYTES_LENGTH = 2
-
     # Bootloader flashing offset
     BOOTLOADER_FLASH_OFFSET = 0x0
 
@@ -347,9 +343,9 @@ class ESPLoader(object):
         # Device-and-runtime-specific cache
         self.cache = {
             "flash_id": None,
-            "chip_id": None,
             "uart_no": None,
             "usb_pid": None,
+            "security_info": None,
         }
 
         if isinstance(port, str):
@@ -425,7 +421,7 @@ class ESPLoader(object):
     def _set_port_baudrate(self, baud):
         try:
             self._port.baudrate = baud
-        except IOError:
+        except OSError:
             raise FatalError(
                 f"Failed to set baud rate {baud}. The driver may not support this rate."
             )
@@ -507,10 +503,35 @@ class ESPLoader(object):
                 if op is None or op_ret == op:
                     return val, data
                 if byte(data, 0) != 0 and byte(data, 1) == self.ROM_INVALID_RECV_MSG:
-                    # Unsupported read_reg can result in
+
+                    def drain_input_buffer(buffering_time=0.2):
+                        """
+                        Actively drain the input buffer by reading data
+                        for a specified time. Simple approach for some
+                        drivers that have issues with the buffer flushing.
+
+                        Args:
+                            buffering_time: Time in seconds to wait for
+                            the buffer to fill.
+                        """
+                        time.sleep(buffering_time)
+                        original_timeout = self._port.timeout
+                        # Set a very short timeout for draining
+                        self._port.timeout = 0.001
+
+                        # Unsupported command response is sent 8 times and has
+                        # 14 bytes length including delimiter 0xC0 bytes.
+                        # At least part of it is read as a command response,
+                        # but to be safe, read it all.
+                        self._port.read(14 * 8)
+
+                        # Restore original timeout
+                        self._port.timeout = original_timeout
+                        self.flush_input()
+
+                    # Unsupported command can result in
                     # more than one error response for some reason
-                    time.sleep(0.2)  # Wait for input buffer to fill
-                    self.flush_input()  # Flush input buffer of hanging response
+                    drain_input_buffer(0.2)
                     raise UnsupportedCommandError(self, op)
 
         finally:
@@ -520,7 +541,13 @@ class ESPLoader(object):
         raise FatalError("Response doesn't match request.")
 
     def check_command(
-        self, op_description, op=None, data=b"", chk=0, timeout=DEFAULT_TIMEOUT
+        self,
+        op_description,
+        op=None,
+        data=b"",
+        chk=0,
+        resp_data_len=0,
+        timeout=DEFAULT_TIMEOUT,
     ):
         """
         Execute a command with 'command', check the result code and throw an appropriate
@@ -528,28 +555,40 @@ class ESPLoader(object):
 
         Returns the "result" of a successful command.
         """
+
+        # The status bytes are first two bytes after the expected response data,
+        # ROM bootloaders of the chips (except ESP8266) return another 2 bytes,
+        # which are reserved for future use, these are ignored here.
+        STATUS_BYTES_LENGTH = 2
+
+        # Execute the command and get the result
         val, data = self.command(op, data, chk, timeout=timeout)
 
-        # things are a bit weird here, bear with us
-
-        # the status bytes are the last 2/4 bytes in the data (depending on chip)
-        if len(data) < self.STATUS_BYTES_LENGTH:
-            raise FatalError(
-                f"Failed to {op_description}. "
-                f"Only got {len(data)} byte status response."
-            )
-        status_bytes = data[-self.STATUS_BYTES_LENGTH :]
-        # only care if the first one is non-zero. If it is, the second byte is a reason.
-        if byte(status_bytes, 0) != 0:
+        # Check if we have enough data,
+        # including the expected response data and status bytes
+        if len(data) < resp_data_len + STATUS_BYTES_LENGTH:
+            # If we don't have enough data, check the first 2 bytes as status
+            status_bytes = data[0:2]
+            # Only care if the first byte is non-zero.
+            # If it is, the second byte is a reason.
+            if status_bytes[0] != 0:
+                raise FatalError.WithResult(f"Failed to {op_description}", status_bytes)
+            else:
+                raise FatalError(
+                    f"Failed to {op_description}. "
+                    f"Only got {len(data)} byte status response."
+                )
+        # The status bytes are positioned after the expected response data
+        # (first two bytes after resp_data_len are the status bytes)
+        status_bytes = data[resp_data_len : resp_data_len + STATUS_BYTES_LENGTH]
+        # Only care if the first byte is non-zero.
+        # If it is, the second byte is a reason.
+        if status_bytes[0] != 0:
             raise FatalError.WithResult(f"Failed to {op_description}", status_bytes)
 
-        # if we had more data than just the status bytes, return it as the result
-        # (this is used by the md5sum command, maybe other commands?)
-        if len(data) > self.STATUS_BYTES_LENGTH:
-            return data[: -self.STATUS_BYTES_LENGTH]
+        if resp_data_len > 0:
+            return data[:resp_data_len]
         else:
-            # otherwise, just return the 'val' field which comes from the reply header
-            # (this is used by read_reg)
             return val
 
     def flush_input(self):
@@ -775,17 +814,26 @@ class ESPLoader(object):
         if not detecting:
             from .targets import ROM_LIST
 
-            # Perform a dummy read_reg to check if the chip is in secure download mode
-            try:
-                chip_magic_value = self.read_reg(ESPLoader.CHIP_DETECT_MAGIC_REG_ADDR)
-            except UnsupportedCommandError:
-                self.secure_download_mode = True
-
             # Check if chip supports reading chip ID from the get-security-info command
             try:
+                # get_chip_id() raises FatalError if the chip does not have a chip ID
+                # (ESP32-S2)
                 chip_id = self.get_chip_id()
-            except (UnsupportedCommandError, struct.error, FatalError):
+                si = self.get_security_info()
+                self.secure_download_mode = si["parsed_flags"]["SECURE_DOWNLOAD_ENABLE"]
+            except (UnsupportedCommandError, FatalError):
                 chip_id = None
+                # Try to read the chip magic value to verify the chip type
+                # (ESP8266, ESP32, ESP32-S2)
+                try:
+                    chip_magic_value = self.read_reg(
+                        ESPLoader.CHIP_DETECT_MAGIC_REG_ADDR
+                    )
+                except UnsupportedCommandError:
+                    # If the chip does not support reading the chip magic value,
+                    # it is ESP32-S2 in SDM
+                    chip_magic_value = None
+                    self.secure_download_mode = True
 
             detected = None
             chip_arg_wrong = False
@@ -809,18 +857,14 @@ class ESPLoader(object):
                     if cls.USES_MAGIC_VALUE and chip_magic_value == cls.MAGIC_VALUE:
                         detected = cls
                         break
-            # If we can't read chip ID and the chip is in SDM (ESP32 or ESP32-S2),
-            # we can't verify
-            elif not chip_id and self.secure_download_mode:
-                if self.CHIP_NAME not in ["ESP32", "ESP32-S2"]:
-                    chip_arg_wrong = True
-                    detected = "ESP32 or ESP32-S2"
-                else:
-                    log.note(
-                        f"Can't verify this chip is {self.CHIP_NAME} "
-                        "because of active Secure Download Mode. "
-                        "Please check it manually."
-                    )
+            # If we can't read chip ID and the chip is in SDM, it is ESP32-S2
+            elif (
+                not chip_id
+                and self.secure_download_mode
+                and self.CHIP_NAME != "ESP32-S2"
+            ):
+                chip_arg_wrong = True
+                detected = "ESP32-S2"
 
             if chip_arg_wrong:
                 if warnings and detected is None:
@@ -853,17 +897,10 @@ class ESPLoader(object):
 
     def read_reg(self, addr, timeout=DEFAULT_TIMEOUT):
         """Read memory address in target"""
-        # we don't call check_command here because read_reg() function is called
-        # when detecting chip type, and the way we check for success
-        # (STATUS_BYTES_LENGTH) is different for different chip types (!)
-        val, data = self.command(
-            self.ESP_CMDS["READ_REG"], struct.pack("<I", addr), timeout=timeout
+        command = struct.pack("<I", addr)
+        return self.check_command(
+            "read target memory", self.ESP_CMDS["READ_REG"], command, timeout=timeout
         )
-        if byte(data, 0) != 0:
-            raise FatalError.WithResult(
-                "Failed to read register address %08x" % addr, data
-            )
-        return val
 
     def write_reg(self, addr, value, mask=0xFFFFFFFF, delay_us=0, delay_after_us=0):
         """Write to memory address in target"""
@@ -897,7 +934,7 @@ class ESPLoader(object):
         """Start downloading an application image to RAM"""
         # check we're not going to overwrite a running stub with this data
         if self.IS_STUB:
-            stub = StubFlasher(self.CHIP_NAME)
+            stub = StubFlasher(self)
             load_start = offset
             load_end = offset + size
             for stub_start, stub_end in [
@@ -1030,11 +1067,16 @@ class ESPLoader(object):
                 else:
                     raise
 
-    def flash_finish(self, reboot=False):
+    def flash_finish(self, reboot=False, timeout=DEFAULT_TIMEOUT):
         """Leave flash mode and run/reboot"""
         pkt = struct.pack("<I", int(not reboot))
         # stub sends a reply to this command
-        self.check_command("leave flash download mode", self.ESP_CMDS["FLASH_END"], pkt)
+        self.check_command(
+            "leave flash download mode",
+            self.ESP_CMDS["FLASH_END"],
+            pkt,
+            timeout=timeout,
+        )
 
     def run(self, reboot=False):
         """Run application code in flash"""
@@ -1053,30 +1095,90 @@ class ESPLoader(object):
         """Read flash type bit field from eFuse. Returns 0, 1, None (not present)"""
         return None  # not implemented for all chip targets
 
-    def get_security_info(self):
-        res = self.check_command(
-            "get security info", self.ESP_CMDS["GET_SECURITY_INFO"], b""
-        )
-        esp32s2 = True if len(res) == 12 else False
-        res = struct.unpack("<IBBBBBBBB" if esp32s2 else "<IBBBBBBBBII", res)
-        return {
+    def get_security_info(self, cache=True):
+        """
+        Get security information from the ESP device including flags,
+        flash encryption count,
+        key purposes, chip ID, and API version.
+
+        The security info command response format according to the ESP32-S3
+        documentation:
+        - 32 bits flags
+        - 1 byte flash_crypt_cnt
+        - 7x1 byte key_purposes
+        - 32-bit word chip_id (ESP32-S3 and later)
+        - 32-bit word eco_version/api_version (ESP32-S3 and later)
+
+        Returns a dictionary with parsed security information and individual
+        flag status.
+        """
+        if cache and self.cache["security_info"] is not None:
+            return self.cache["security_info"]
+
+        # The following mapping was taken from the ROM code
+        # This mapping is same across all targets in the ROM
+        SECURITY_INFO_FLAG_MAP = {
+            "SECURE_BOOT_EN": (1 << 0),
+            "SECURE_BOOT_AGGRESSIVE_REVOKE": (1 << 1),
+            "SECURE_DOWNLOAD_ENABLE": (1 << 2),
+            "SECURE_BOOT_KEY_REVOKE0": (1 << 3),
+            "SECURE_BOOT_KEY_REVOKE1": (1 << 4),
+            "SECURE_BOOT_KEY_REVOKE2": (1 << 5),
+            "SOFT_DIS_JTAG": (1 << 6),
+            "HARD_DIS_JTAG": (1 << 7),
+            "DIS_USB": (1 << 8),
+            "DIS_DOWNLOAD_DCACHE": (1 << 9),
+            "DIS_DOWNLOAD_ICACHE": (1 << 10),
+        }
+
+        def parse_security_flags(flags_value):
+            """Parse security flags into individual boolean values"""
+            parsed_flags = {}
+            for flag_name, flag_mask in SECURITY_INFO_FLAG_MAP.items():
+                parsed_flags[flag_name] = (flags_value & flag_mask) != 0
+            return parsed_flags
+
+        # Try with 20 bytes first (most chips), fall back to 12 bytes (ESP32-S2)
+        try:
+            res = self.check_command(
+                "get security info",
+                self.ESP_CMDS["GET_SECURITY_INFO"],
+                b"",
+                resp_data_len=20,
+            )
+            res = struct.unpack("<IBBBBBBBBII", res)
+            esp32s2 = False
+        except FatalError:
+            res = self.check_command(
+                "get security info",
+                self.ESP_CMDS["GET_SECURITY_INFO"],
+                b"",
+                resp_data_len=12,
+            )
+            res = struct.unpack("<IBBBBBBBB", res)
+            esp32s2 = True
+
+        security_info = {
             "flags": res[0],
             "flash_crypt_cnt": res[1],
             "key_purposes": res[2:9],
             "chip_id": None if esp32s2 else res[9],
             "api_version": None if esp32s2 else res[10],
+            "parsed_flags": parse_security_flags(res[0]),
         }
 
+        self.cache["security_info"] = security_info
+        return security_info
+
     def get_chip_id(self):
-        if self.cache["chip_id"] is None:
-            res = self.check_command(
-                "get security info", self.ESP_CMDS["GET_SECURITY_INFO"], b""
+        chip_id = self.get_security_info()["chip_id"]
+        if chip_id is None:
+            raise FatalError(
+                "Security info command does not contain chip ID. "
+                "This is expected for ESP32-S2 which doesn't support chip ID "
+                "in security info."
             )
-            res = struct.unpack(
-                "<IBBBBBBBBI", res[:16]
-            )  # 4b flags, 1b flash_crypt_cnt, 7*1b key_purposes, 4b chip_id
-            self.cache["chip_id"] = res[9]  # 2/4 status bytes invariant
-        return self.cache["chip_id"]
+        return chip_id
 
     def get_uart_no(self):
         """
@@ -1160,8 +1262,8 @@ class ESPLoader(object):
             return cls.FLASH_SIZES[arg]
         except KeyError:
             raise FatalError(
-                "Flash size '%s' is not supported by this chip type. "
-                "Supported sizes: %s" % (arg, ", ".join(cls.FLASH_SIZES.keys()))
+                f"Flash size '{arg}' is not supported by this chip type. "
+                f"Supported sizes: {', '.join(cls.FLASH_SIZES.keys())}"
             )
 
     @classmethod
@@ -1173,20 +1275,23 @@ class ESPLoader(object):
             return cls.FLASH_FREQUENCY[arg]
         except KeyError:
             raise FatalError(
-                "Flash frequency '%s' is not supported by this chip type. "
-                "Supported frequencies: %s"
-                % (arg, ", ".join(cls.FLASH_FREQUENCY.keys()))
+                f"Flash frequency '{arg}' is not supported by this chip type. "
+                f"Supported frequencies: {', '.join(cls.FLASH_FREQUENCY.keys())}"
             )
 
     def run_stub(self, stub: StubFlasher | None = None) -> "ESPLoader":
         log.stage()
         if stub is None:
-            stub = StubFlasher(self.CHIP_NAME)
+            stub = StubFlasher(self)
 
         if self.sync_stub_detected:
             log.stage(finish=True)
             log.print("Stub flasher is already running. No upload is necessary.")
             return self.STUB_CLASS(self) if self.STUB_CLASS is not None else self
+
+        secure_boot_workflow = (
+            self.CHIP_NAME == "ESP32-S3" and self.get_secure_boot_enabled()
+        )
 
         # Upload
         log.print("Uploading stub flasher...")
@@ -1200,8 +1305,24 @@ class ESPLoader(object):
                     from_offs = seq * self.ESP_RAM_BLOCK
                     to_offs = from_offs + self.ESP_RAM_BLOCK
                     self.mem_block(field[from_offs:to_offs], seq)
+
         log.print("Running stub flasher...")
-        self.mem_finish(stub.entry)
+        if not secure_boot_workflow:
+            self.mem_finish(stub.entry)
+        else:
+            # Bug in ESP32-S3 ROM prevents stub execution if secure boot is enabled
+            # Hijack the `read` function in ROM to point to the stub entrypoint
+            # got with GDB - p &rom_spiflash_legacy_funcs.read
+            rom_spiflash_legacy_funcs_read_ptr = 0x3FCEF688
+            self.mem_finish(0)  # Finish uploading to RAM but don't run the stub yet
+            stored_read_pointer = self.read_reg(rom_spiflash_legacy_funcs_read_ptr)
+            self.write_reg(rom_spiflash_legacy_funcs_read_ptr, stub.entry)
+            self.command(  # Trigger the `read` in ROM to jump to the stub entrypoint
+                self.ESP_CMDS["READ_FLASH_SLOW"],
+                struct.pack("<II", 0, 0),
+                wait_response=False,
+            )
+
         try:
             p = self.read()
         except StopIteration:
@@ -1213,6 +1334,9 @@ class ESPLoader(object):
 
         if p != b"OHAI":
             raise FatalError(f"Failed to start stub flasher. Unexpected response: {p}")
+        if secure_boot_workflow:
+            # Restore the original `read` function pointer
+            self.write_reg(rom_spiflash_legacy_funcs_read_ptr, stored_read_pointer)
         log.stage(finish=True)
         log.print("Stub flasher running.")
         return self.STUB_CLASS(self) if self.STUB_CLASS is not None else self
@@ -1282,7 +1406,7 @@ class ESPLoader(object):
                     raise
 
     @stub_and_esp32_function_only
-    def flash_defl_finish(self, reboot=False):
+    def flash_defl_finish(self, reboot=False, timeout=DEFAULT_TIMEOUT):
         """Leave compressed flash mode and run/reboot"""
         if not reboot and not self.IS_STUB:
             # skip sending flash_finish to ROM loader, as this
@@ -1290,7 +1414,10 @@ class ESPLoader(object):
             return
         pkt = struct.pack("<I", int(not reboot))
         self.check_command(
-            "leave compressed flash mode", self.ESP_CMDS["FLASH_DEFL_END"], pkt
+            "leave compressed flash mode",
+            self.ESP_CMDS["FLASH_DEFL_END"],
+            pkt,
+            timeout=timeout,
         )
         self.in_bootloader = False
 
@@ -1298,20 +1425,21 @@ class ESPLoader(object):
     def flash_md5sum(self, addr, size):
         # the MD5 command returns additional bytes in the standard
         # command reply slot
+        RESP_DATA_LEN = 32
+        RESP_DATA_LEN_STUB = 16
         timeout = timeout_per_mb(MD5_TIMEOUT_PER_MB, size)
         res = self.check_command(
             "calculate md5sum",
             self.ESP_CMDS["SPI_FLASH_MD5"],
             struct.pack("<IIII", addr, size, 0, 0),
+            resp_data_len=RESP_DATA_LEN_STUB if self.IS_STUB else RESP_DATA_LEN,
             timeout=timeout,
         )
 
-        if len(res) == 32:
+        if not self.IS_STUB:
             return res.decode("utf-8")  # already hex formatted
-        elif len(res) == 16:
-            return hexify(res).lower()
         else:
-            raise FatalError("MD5Sum command returned unexpected result: %r" % res)
+            return hexify(res).lower()
 
     @stub_and_esp32_function_only
     def change_baud(self, baud):
@@ -1395,7 +1523,7 @@ class ESPLoader(object):
         arg = struct.pack("<I", hspi_arg)
         if not self.IS_STUB:
             # ESP32 ROM loader takes additional 'is legacy' arg, which is not
-            # currently supported in the stub loader or esptool.py
+            # currently supported in the stub loader or esptool
             # (as it's not usually needed.)
             is_legacy = 0
             arg += struct.pack("BBBB", is_legacy, 0, 0, 0)
@@ -1707,7 +1835,6 @@ class StubMixin:
     """
 
     FLASH_WRITE_SIZE = 0x4000  # Default value, can be overridden
-    STATUS_BYTES_LENGTH = 2
     IS_STUB = True
 
     def __init__(self, rom_loader):
@@ -1716,6 +1843,10 @@ class StubMixin:
         self._trace_enabled = rom_loader._trace_enabled
         self.cache = rom_loader.cache
         self.flush_input()  # resets _slip_reader
+
+    def stub_json_name(self):
+        chip_name = strip_chip_name(self.CHIP_NAME)
+        return f"{chip_name}.json"
 
 
 def slip_reader(port, trace_function):
@@ -1819,7 +1950,7 @@ def slip_reader(port, trace_function):
                 partial_packet += b
 
 
-class HexFormatter(object):
+class HexFormatter:
     """
     Wrapper class which takes binary data in its constructor
     and returns a hex string as it's __str__ method.
@@ -1858,10 +1989,9 @@ class HexFormatter(object):
                     for c in line.decode("ascii", "replace")
                 )
                 s = s[16:]
-                result += "\n    %-16s %-16s | %s" % (
-                    hexify(line[:8], False),
-                    hexify(line[8:], False),
-                    ascii_line,
+                result += (
+                    f"\n    {hexify(line[:8], False):<16s} "
+                    f"{hexify(line[8:], False):<16s} | {ascii_line}"
                 )
             return result
         else:

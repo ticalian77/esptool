@@ -43,6 +43,10 @@ class ESP32P4ROM(ESP32ROM):
 
     EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # BLOCK0 read base address
 
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG = EFUSE_BASE + 0x34
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT = 9
+    FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY = 2
+
     EFUSE_PURPOSE_KEY0_REG = EFUSE_BASE + 0x34
     EFUSE_PURPOSE_KEY0_SHIFT = 24
     EFUSE_PURPOSE_KEY1_REG = EFUSE_BASE + 0x34
@@ -80,9 +84,21 @@ class ESP32P4ROM(ESP32ROM):
 
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
 
-    UARTDEV_BUF_NO = 0x4FF3FEC8  # Variable in ROM .bss which indicates the port in use
-    UARTDEV_BUF_NO_USB_OTG = 5  # The above var when USB-OTG is used
-    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 6  # The above var when USB-JTAG/Serial is used
+    @property
+    def UARTDEV_BUF_NO(self):
+        """Variable .bss.UartDev.buff_uart_no in ROM .bss
+        which indicates the port in use.
+        """
+        BUF_UART_NO_OFFSET = 24
+
+        BSS_UART_DEV_ADDR = 0x4FF3FEB0 if self.get_chip_revision() < 300 else 0x4FFBFEB0
+        return BSS_UART_DEV_ADDR + BUF_UART_NO_OFFSET
+
+    # The value from UARTDEV_BUF_NO when USB-OTG is used
+    UARTDEV_BUF_NO_USB_OTG = 5
+
+    # The value from UARTDEV_BUF_NO when USB-JTAG/Serial is used
+    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 6
 
     MEMORY_MAP = [
         [0x00000000, 0x00010000, "PADDING"],
@@ -137,7 +153,8 @@ class ESP32P4ROM(ESP32ROM):
 
     def get_major_chip_version(self):
         num_word = 2
-        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 4) & 0x03
+        word = self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word))
+        return (((word >> 23) & 1) << 2) | ((word >> 4) & 0x03)
 
     def get_chip_description(self):
         chip_name = {
@@ -203,9 +220,15 @@ class ESP32P4ROM(ESP32ROM):
         if any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes):
             return True
 
-        return any(p == self.PURPOSE_VAL_XTS_AES256_KEY_1 for p in purposes) and any(
+        if any(p == self.PURPOSE_VAL_XTS_AES256_KEY_1 for p in purposes) and any(
             p == self.PURPOSE_VAL_XTS_AES256_KEY_2 for p in purposes
-        )
+        ):
+            return True
+
+        return (
+            self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
+            >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
+        ) & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
 
     def change_baud(self, baud):
         ESPLoader.change_baud(self, baud)
@@ -284,6 +307,11 @@ class ESP32P4StubLoader(StubMixin, ESP32P4ROM):
         if rom_loader.uses_usb_otg():
             self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
             self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
+
+    def stub_json_name(self):
+        if self.get_chip_revision() < 300:
+            return "esp32p4rc1.json"
+        return "esp32p4.json"
 
 
 ESP32P4ROM.STUB_CLASS = ESP32P4StubLoader

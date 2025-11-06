@@ -117,7 +117,7 @@ class BaseTestCase:
 
     def assertImageInfo(self, binpath, chip="esp8266", assert_sha=False):
         """
-        Run esptool.py image-info on a binary file,
+        Run esptool image-info on a binary file,
         assert no red flags about contents.
         """
         cmd = [sys.executable, "-m", "esptool", "--chip", chip, "image-info", binpath]
@@ -160,6 +160,13 @@ class BaseTestCase:
             print(e.output)
             raise
 
+    @staticmethod
+    def assertAllFF(some_bytes):
+        """Assert that the given bytes are all 0xFF (erased flash state)"""
+        assert b"\xff" * len(some_bytes) == some_bytes, (
+            "Expected all 0xFF bytes, but found different values"
+        )
+
 
 class TestESP8266V1Image(BaseTestCase):
     ELF = "esp8266-nonosssdk20-iotdemo.elf"
@@ -168,14 +175,14 @@ class TestESP8266V1Image(BaseTestCase):
 
     @classmethod
     def setup_class(self):
-        super(TestESP8266V1Image, self).setup_class()
+        super().setup_class()
         self.run_elf2image(self, "esp8266", self.ELF, 1)
 
     @classmethod
     def teardown_class(self):
         try_delete(self.BIN_LOAD)
         try_delete(self.BIN_IROM)
-        super(TestESP8266V1Image, self).teardown_class()
+        super().teardown_class()
 
     def test_irom_bin(self):
         with open(self.ELF, "rb") as f:
@@ -343,6 +350,84 @@ class TestESP32Image(BaseTestCase):
         # --ram-only-header produces just 2 visible segments in the bin
         image = self._test_elf2image(ELF, BIN, ["--ram-only-header"])
         assert len(image.segments) == 2
+
+    @pytest.fixture(scope="class")
+    def reference_bin(self):
+        BASE_NAME = "esp32-bootloader"
+        BIN = f"{BASE_NAME}-reference.bin"
+        self.run_elf2image("esp32", f"{BASE_NAME}.elf")
+        os.rename(f"{BASE_NAME}.bin", BIN)
+        yield BIN
+        # Cleanup the reference binary after the test
+        try_delete(BIN)
+
+    def test_pad_to_size(self, reference_bin: str):
+        """Test that --pad-to-size correctly pads output binary to specified size"""
+        ELF = "esp32-bootloader.elf"
+        BIN = "esp32-bootloader.bin"
+
+        try:
+            # Generate the padded binary with 1MB size
+            self.run_elf2image("esp32", ELF, extra_args=["--pad-to-size", "1MB"])
+
+            # Get the size of the reference binary
+            normal_size = os.path.getsize(reference_bin)
+
+            # Check that the padded binary is exactly 1MB
+            padded_size = os.path.getsize(BIN)
+            expected_size = 0x100000  # 1MB in bytes
+            assert padded_size == expected_size, (
+                f"Expected {expected_size} bytes (1MB), got {padded_size} bytes"
+            )
+
+            # Check that the original content is preserved at the beginning
+            with open(reference_bin, "rb") as f:
+                original_content = f.read()
+            with open(BIN, "rb") as f:
+                padded_content = f.read()
+
+            assert padded_content[:normal_size] == original_content, (
+                "Original content should be preserved at the beginning of padded file"
+            )
+
+            # Check that the padding is filled with 0xFF bytes (erased flash state)
+            padding = padded_content[normal_size:]
+            expected_padding_size = expected_size - normal_size
+            assert len(padding) == expected_padding_size, (
+                f"Padding should be {expected_padding_size} bytes, got {len(padding)}"
+            )
+            self.assertAllFF(padding)
+
+        finally:
+            try_delete(BIN)
+
+    @pytest.mark.parametrize("size", ["512KB", "2MB", "4MB"])
+    def test_pad_to_size_different_sizes(self, size: str, reference_bin: str):
+        """Test --pad-to-size with different size values"""
+        ELF = "esp32-bootloader.elf"
+        BIN = "esp32-bootloader.bin"
+
+        expected_bytes = esptool.util.flash_size_bytes(size)
+        try:
+            # Generate the padded binary
+            self.run_elf2image("esp32", ELF, extra_args=["--pad-to-size", size])
+
+            # Check the file size
+            padded_size = os.path.getsize(BIN)
+            assert padded_size == expected_bytes, (
+                f"Expected {expected_bytes} bytes for {size}, got {padded_size}"
+            )
+
+            # Check that padding is 0xFF
+            with open(BIN, "rb") as f:
+                padded_content = f.read()
+
+            # Get original size from the normal binary and check that padding
+            normal_size = os.path.getsize(reference_bin)
+            self.assertAllFF(padded_content[normal_size:])
+
+        finally:
+            try_delete(BIN)
 
 
 class TestESP8266FlashHeader(BaseTestCase):
@@ -537,6 +622,68 @@ class TestHashAppend(BaseTestCase):
 
         assert bin_without_hash[self.HASH_APPEND_OFFSET] == 0
         assert bytes(expected_bin_without_hash) == bin_without_hash
+
+
+class TestELFSectionHandling(BaseTestCase):
+    """Test ELF section type handling and related functionality."""
+
+    @staticmethod
+    def _modify_section_type(elf_path, section_name, new_type):
+        """
+        Modify the type of a specific section in the ELF file.
+        """
+        with open(elf_path, "rb+") as f:
+            elf = ELFFile(f)
+            section = elf.get_section_by_name(section_name)
+
+            index = elf.get_section_index(section_name)
+            # Calculate the section header's position in the file (using section index,
+            # the section header table's offset and section header entry size)
+            sh_entry_offset = elf.header["e_shoff"] + index * elf.header["e_shentsize"]
+
+            # Modify the section type in the header
+            section.header.sh_type = new_type
+
+            f.seek(sh_entry_offset)
+            f.write(elf.structs.Elf_Shdr.build(section.header))
+
+    @staticmethod
+    def _get_section_type(elf_path, section_name):
+        """
+        Get the current type of a specific section in the ELF file.
+        """
+        with open(elf_path, "rb") as f:
+            elf = ELFFile(f)
+            section = elf.get_section_by_name(section_name)
+            return section.header.sh_type
+
+    def test_unknown_section_type_warning(self, capsys):
+        """Test that unknown section types generate the expected warning message."""
+        ELF = "esp32c6-appdesc.elf"
+        BIN = "esp32c6-appdesc.bin"
+        SECTION_NAME = ".flash.appdesc"
+        UNKNOWN_TYPE = 0x99
+
+        original_sec_type = self._get_section_type(ELF, SECTION_NAME)
+
+        # Modify the section to have an unknown type
+        self._modify_section_type(ELF, SECTION_NAME, UNKNOWN_TYPE)
+
+        # Verify the section was actually modified
+        modified_type = self._get_section_type(ELF, SECTION_NAME)
+        assert modified_type == UNKNOWN_TYPE
+
+        try:
+            self.run_elf2image("esp32c6", ELF, allow_warnings=True)
+            output = capsys.readouterr().out
+            print(output)
+
+            expected_warning = f"Unknown section type {UNKNOWN_TYPE:#04x} in ELF file"
+            assert expected_warning in output
+
+        finally:
+            self._modify_section_type(ELF, SECTION_NAME, original_sec_type)
+            try_delete(BIN)
 
 
 class TestMMUPageSize(BaseTestCase):

@@ -9,6 +9,7 @@ import struct
 import time
 
 import esptool
+from esptool import log
 
 from .mem_definition import EfuseDefineBlocks, EfuseDefineFields, EfuseDefineRegisters
 from .. import base_fields
@@ -26,7 +27,7 @@ class EfuseBlock(base_fields.EfuseBlockBase):
         else:
             if parent.coding_scheme is None:
                 parent.read_coding_scheme()
-        super(EfuseBlock, self).__init__(parent, param, skip_read=skip_read)
+        super().__init__(parent, param, skip_read=skip_read)
 
     def apply_coding_scheme(self):
         data = self.get_raw(from_read=False)[::-1]
@@ -65,9 +66,6 @@ class EspEfuses(base_fields.EspEfusesBase):
     Wrapper object to manage the efuse fields in a connected ESP bootloader
     """
 
-    debug = False
-    do_not_confirm = False
-
     def __init__(
         self,
         esp,
@@ -76,18 +74,15 @@ class EspEfuses(base_fields.EspEfusesBase):
         do_not_confirm=False,
         extend_efuse_table=None,
     ):
+        super().__init__(esp, skip_connect, debug, do_not_confirm, extend_efuse_table)
         self.Blocks = EfuseDefineBlocks()
         self.Fields = EfuseDefineFields(extend_efuse_table)
         self.REGS = EfuseDefineRegisters
         self.BURN_BLOCK_DATA_NAMES = self.Blocks.get_burn_block_data_names()
         self.BLOCKS_FOR_KEYS = self.Blocks.get_blocks_for_keys()
-        self._esp = esp
-        self.debug = debug
-        self.do_not_confirm = do_not_confirm
         if esp.CHIP_NAME != "ESP32":
             raise esptool.FatalError(
-                "Expected the 'esp' param for ESP32 chip but got for '%s'."
-                % (esp.CHIP_NAME)
+                f"Expected the 'esp' param for ESP32 chip but got for '{esp.CHIP_NAME}'."
             )
         self.blocks = [
             EfuseBlock(self, self.Blocks.get(block), skip_read=skip_connect)
@@ -119,7 +114,7 @@ class EspEfuses(base_fields.EspEfusesBase):
                 ]
             else:
                 raise esptool.FatalError(
-                    "The coding scheme (%d) - is not supported" % self.coding_scheme
+                    f"The coding scheme ({self.coding_scheme}) - is not supported"
                 )
             if self["MAC_VERSION"].get() == 1:
                 self.efuses += [
@@ -174,8 +169,8 @@ class EspEfuses(base_fields.EspEfusesBase):
             self.coding_scheme = coding_scheme
 
     def print_status_regs(self):
-        print("")
-        print(
+        log.print("")
+        log.print(
             "{:27} 0x{:08x}".format(
                 "EFUSE_REG_DEC_STATUS", self.read_reg(self.REGS.EFUSE_REG_DEC_STATUS)
             )
@@ -212,7 +207,7 @@ class EspEfuses(base_fields.EspEfusesBase):
             if self.read_reg(self.REGS.EFUSE_REG_CMD) == 0:
                 return
         raise esptool.FatalError(
-            "Timed out waiting for Efuse controller command to complete"
+            "Timed out waiting for eFuse controller command to complete"
         )
 
     def efuse_read(self):
@@ -234,9 +229,9 @@ class EspEfuses(base_fields.EspEfusesBase):
                 block.num_errors = 0
                 block.fail = err != 0
             if not silent and block.fail:
-                print(
-                    "Error(s) in BLOCK%d [ERRORS:%d FAIL:%d]"
-                    % (block.id, block.num_errors, block.fail)
+                log.print(
+                    f"Error(s) in BLOCK{block.id} "
+                    f"[ERRORS:{block.num_errors} FAIL:{block.fail}]"
                 )
         if (self.debug or err) and not silent:
             self.print_status_regs()
@@ -273,7 +268,7 @@ class EfuseMacField(EfuseField):
     (if MAC_VERSION == 1 then the CUSTOM_MAC is used)
     """
 
-    def check_format(self, new_value_str):
+    def check_format(self, new_value_str: str | None):
         if new_value_str is None:
             raise esptool.FatalError(
                 "Required MAC Address in AA:CD:EF:01:02:03 format!"
@@ -301,13 +296,12 @@ class EfuseMacField(EfuseField):
     def get_and_check(raw_mac, stored_crc):
         computed_crc = EfuseMacField.calc_crc(raw_mac)
         if computed_crc == stored_crc:
-            valid_msg = "(CRC 0x%02x OK)" % stored_crc
+            valid_msg = f"(CRC {stored_crc:#04x} OK)"
         else:
-            valid_msg = "(CRC 0x%02x invalid - calculated 0x%02x)" % (
-                stored_crc,
-                computed_crc,
+            valid_msg = (
+                f"(CRC {stored_crc:#04x} invalid - calculated {computed_crc:#04x})"
             )
-        return "%s %s" % (util.hexify(raw_mac, ":"), valid_msg)
+        return " ".join([util.hexify(raw_mac, ":"), valid_msg])
 
     @staticmethod
     def calc_crc(raw_mac):
@@ -337,10 +331,8 @@ class EfuseMacField(EfuseField):
 
     def save(self, new_value):
         def print_field(e, new_value):
-            print(
-                "    - '{}' ({}) {} -> {}".format(
-                    e.name, e.description, e.get_bitstring(), new_value
-                )
+            log.print(
+                f"    - '{e.name}' ({e.description}) {e.get_bitstring()} -> {new_value}"
             )
 
         if self.name == "CUSTOM_MAC":
@@ -357,14 +349,12 @@ class EfuseMacField(EfuseField):
                 if mac_version.get() != 1:
                     if not self.parent.force_write_always:
                         raise esptool.FatalError(
-                            "MAC_VERSION = {}, should be 0 or 1.".format(
-                                mac_version.get()
-                            )
+                            f"MAC_VERSION = {mac_version.get()}, should be 0 or 1."
                         )
 
             bitarray_mac = self.convert_to_bitstring(new_value)
             print_field(self, bitarray_mac)
-            super(EfuseMacField, self).save(new_value)
+            super().save(new_value)
 
             crc_val = self.calc_crc(new_value)
             crc_field = self.parent["CUSTOM_MAC_CRC"]
@@ -397,7 +387,7 @@ class EfuseWafer(EfuseField):
         return revision
 
     def save(self, new_value):
-        raise esptool.FatalError("Burning %s is not supported" % self.name)
+        raise esptool.FatalError(f"Burning {self.name} is not supported")
 
 
 class EfusePkg(EfuseField):
@@ -407,7 +397,7 @@ class EfusePkg(EfuseField):
         return (hi_bits << 3) + lo_bits
 
     def save(self, new_value):
-        raise esptool.FatalError("Burning %s is not supported" % self.name)
+        raise esptool.FatalError(f"Burning {self.name} is not supported.")
 
 
 class EfuseSpiPinField(EfuseField):
@@ -429,8 +419,7 @@ class EfuseSpiPinField(EfuseField):
             )
         elif new_value_int > 33:
             raise esptool.FatalError(
-                "IO pin %d cannot be set for SPI flash. 0-29, 32 & 33 only."
-                % new_value_int
+                f"IO pin {new_value_int} cannot be set for SPI flash. 0-29, 32 & 33 only."
             )
         elif new_value_int in [32, 33]:
             return str(new_value_int - 2)

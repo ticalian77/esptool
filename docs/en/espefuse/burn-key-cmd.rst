@@ -3,7 +3,7 @@
 Burn Key
 ========
 
-The ``espefuse.py burn_key`` command burns keys to eFuse blocks:
+The ``espefuse burn-key`` command burns keys to eFuse blocks:
 
 .. list::
 
@@ -63,9 +63,14 @@ Optional arguments:
 
         - USER.
         - RESERVED.
-        :esp32s2 or esp32s3: - XTS_AES_256_KEY_1. The first 256 bits of 512bit flash encryption key.
-        :esp32s2 or esp32s3: - XTS_AES_256_KEY_2. The second 256 bits of 512bit flash encryption key.
-        :esp32h2: - ECDSA_KEY. It can be ECDSA private keys based on NIST192p or NIST256p curve. The private key is extracted from the given file and written into a eFuse block with write and read protection enabled. This private key shall be used by ECDSA accelerator for the signing purpose.
+        :esp32p4 or esp32s2 or esp32s3: - XTS_AES_256_KEY_1. The first 256 bits of 512bit flash encryption key.
+        :esp32p4 or esp32s2 or esp32s3: - XTS_AES_256_KEY_2. The second 256 bits of 512bit flash encryption key.
+        :esp32c5 or esp32c61 or esp32h2 or esp32h21 or esp32h4 or esp32p4: - ECDSA_KEY. It can be ECDSA private keys based on NIST192p or NIST256p curve. The private key is extracted from the given file and written into a eFuse block with write and read protection enabled. This private key shall be used by ECDSA accelerator for the signing purpose.
+        :esp32c5: - ECDSA_KEY_P192. ECDSA private keys based on NIST192p curve.
+        :esp32c5: - ECDSA_KEY_P256. ECDSA private keys based on NIST256p curve.
+        :esp32c5: - ECDSA_KEY_P384. ECDSA private keys based on NIST384p curve. This allows you to write a whole 48-byte key into two blocks with ``ECDSA_KEY_P384_H`` and ``ECDSA_KEY_P384_L`` purposes.
+        :esp32c5: - ECDSA_KEY_P384_H. Upper 32 bytes of the 48-byte ECDSA_P384 key (last 16 bytes of key + 16 padding bytes).
+        :esp32c5: - ECDSA_KEY_P384_L. Lower 32 bytes of the 48-byte ECDSA_P384 key.
         - XTS_AES_128_KEY. 256 bit flash encryption key.
         - HMAC_DOWN_ALL.
         - HMAC_DOWN_JTAG.
@@ -74,22 +79,27 @@ Optional arguments:
         - SECURE_BOOT_DIGEST0. 1 secure boot key.
         - SECURE_BOOT_DIGEST1. 2 secure boot key.
         - SECURE_BOOT_DIGEST2. 3 secure boot key.
-        :esp32s2 or esp32s3: - XTS_AES_256_KEY. This is a virtual key purpose for flash encryption key. This allows you to write a whole 512-bit key into two blocks with ``XTS_AES_256_KEY_1`` and ``XTS_AES_256_KEY_2`` purposes without splitting the key file.
+        :esp32p4 or esp32s2 or esp32s3: - XTS_AES_256_KEY. This is a virtual key purpose for flash encryption key. This allows you to write a whole 512-bit key into two blocks with ``XTS_AES_256_KEY_1`` and ``XTS_AES_256_KEY_2`` purposes without splitting the key file.
+        :esp32c5 or esp32h4 or esp32p4: - KM_INIT_KEY. This is a key that is used for the generation of AES/ECDSA keys by the key manager.
 
-.. only:: esp32h2
+.. only:: esp32c5 or esp32c61 or esp32h2 or esp32h21 or esp32h4 or esp32p4
 
-    {IDF_TARGET_NAME} has the ECDSA accelerator for signature purposes and supports private keys based on the NIST192p or NIST256p curve. These two commands below can be used to generate such keys (``PEM`` file). The ``burn_key`` command with the ``ECDSA_KEY`` purpose takes the ``PEM`` file and writes the private key into a eFuse block. The key is written to the block in reverse byte order.
+    {IDF_TARGET_NAME} has the ECDSA accelerator for signature purposes and supports private keys based on the NIST192p or NIST256p curve (some chips support NIST384p). These two commands below can be used to generate such keys (``PEM`` file). The ``burn-key`` command with the ``ECDSA_KEY`` purpose takes the ``PEM`` file and writes the private key into a eFuse block. The key is written to the block in reverse byte order.
 
-    For NIST192p, the private key is 192 bits long, so 8 padding bytes ("0x00") are added.
+    .. list::
+
+      - For NIST192p, the private key is 192 bits long, so 8 padding bytes ("0x00") are added.
+      - For NIST256p, the private key is 256 bits long.
+      - For NIST384p, the private key is 384 bits long, so 16 padding bytes ("0x00") are added.
 
     .. code-block:: none
 
-        > espsecure.py generate_signing_key -v 2 -s ecdsa192 ecdsa192.pem
+        > espsecure generate_signing_key -v 2 -s ecdsa192 ecdsa192.pem
         ECDSA NIST192p private key in PEM format written to ecdsa192.pem
 
     .. code-block:: none
 
-        > espsecure.py generate_signing_key -v 2 -s ecdsa256 ecdsa256.pem
+        > espsecure generate_signing_key -v 2 -s ecdsa256 ecdsa256.pem
         ECDSA NIST256p private key in PEM format written to ecdsa256.pem
 
 .. only:: esp32c2
@@ -146,7 +156,7 @@ By default, when an encryption key block is burned it is also read and write pro
 
 .. code-block:: none
 
-    espefuse.py burn_key secure_boot_v1 secure_boot_key_v1.bin
+    espefuse burn-key secure_boot_v1 secure_boot_key_v1.bin
 
 .. only:: esp32
 
@@ -166,9 +176,9 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py burn_key flash_encryption  256bit_fe_key.bin
+        > espefuse burn-key flash_encryption  256bit_fe_key.bin
 
-        === Run "burn_key" command ===
+        === Run "burn-key" command ===
         Sensitive data will be hidden (see --show-sensitive-info)
         Burn keys to blocks:
         - BLOCK1 -> [?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??]
@@ -194,7 +204,7 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py summary
+        > espefuse summary
         ...
         BLOCK1 (BLOCK1):                                   Flash encryption key
         = ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? -/-
@@ -209,9 +219,9 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py burn_key flash_encryption  256bit_fe_key.bin --no-protect-key
+        > espefuse burn-key flash_encryption  256bit_fe_key.bin --no-protect-key
 
-        === Run "burn_key" command ===
+        === Run "burn-key" command ===
         Sensitive data will be hidden (see --show-sensitive-info)
         Burn keys to blocks:
         - BLOCK1 -> [?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??]
@@ -234,7 +244,7 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py summary
+        > espefuse summary
         ...
         BLOCK1 (BLOCK1):                                   Flash encryption key
         = 1f 1e 1d 1c 1b 1a 19 18 17 16 15 14 13 12 11 10 0f 0e 0d 0c 0b 0a 09 08 07 06 05 04 03 02 01 00 R/W
@@ -256,9 +266,9 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py burn_key BLOCK_KEY0 ~/esp/tests/efuse/512bits_0.bin  XTS_AES_256_KEY --no-read-protect
+        > espefuse burn-key BLOCK_KEY0 ~/esp/tests/efuse/512bits_0.bin  XTS_AES_256_KEY --no-read-protect
 
-        === Run "burn_key" command ===
+        === Run "burn-key" command ===
         Sensitive data will be hidden (see --show-sensitive-info)
         Burn keys to blocks:
         - BLOCK_KEY0 -> [?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??]
@@ -290,7 +300,7 @@ Usage
         Reading updated efuses...
         Successful
 
-        > espefuse.py summary
+        > espefuse summary
         ...
         KEY_PURPOSE_0 (BLOCK0)                             KEY0 purpose                                       = XTS_AES_256_KEY_1 R/- (0x2)
         KEY_PURPOSE_1 (BLOCK0)                             KEY1 purpose                                       = XTS_AES_256_KEY_2 R/- (0x3)
@@ -308,11 +318,11 @@ Usage
 
     .. code-block:: none
 
-        > espefuse.py -c esp32c2  \
-                                burn_key_digest secure_images/ecdsa256_secure_boot_signing_key_v2.pem \
-                                burn_key BLOCK_KEY0 images/efuse/128bit_key.bin XTS_AES_128_KEY_DERIVED_FROM_128_EFUSE_BITS
+        > espefuse -c esp32c2  \
+                                burn-key-digest secure_images/ecdsa256_secure_boot_signing_key_v2.pem \
+                                burn-key BLOCK_KEY0 images/efuse/128bit_key.bin XTS_AES_128_KEY_DERIVED_FROM_128_EFUSE_BITS
 
-        === Run "burn_key_digest" command ===
+        === Run "burn-key-digest" command ===
         Sensitive data will be hidden (see --show-sensitive-info)
         Burn keys to blocks:
         - BLOCK_KEY0_HI_128 -> [?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??]
@@ -321,7 +331,7 @@ Usage
 
         Batch mode is enabled, the burn will be done at the end of the command.
 
-        === Run "burn_key" command ===
+        === Run "burn-key" command ===
         Sensitive data will be hidden (see --show-sensitive-info)
         Burn keys to blocks:
         - BLOCK_KEY0_LOW_128 -> [?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??]
@@ -343,3 +353,44 @@ Usage
         BURN BLOCK3  - OK (write block == read block)
         BURN BLOCK0  - OK (write block == read block)
         Reading updated efuses...
+
+.. only:: esp32c5
+
+    .. code-block:: none
+
+        > espefuse -c esp32c2  BLOCK_KEY0 secure_images/ecdsa384_secure_boot_signing_key.pem ECDSA_KEY_P384 --no-read-protect --show-sensitive-info
+
+        === Run "burn-key" command ===
+        Burn keys to blocks:
+        - BLOCK_KEY0 -> [0e d2 8e c6 86 f0 f6 af 50 51 c3 5c 41 2b c7 48 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+                Reversing byte order for ECDSA_KEY_P384_H hardware peripheral...
+                'KEY_PURPOSE_0': 'USER' -> 'ECDSA_KEY_P384_H'.
+                Disabling write to 'KEY_PURPOSE_0'...
+                Disabling write to key block...
+
+        - BLOCK_KEY1 -> [65 ca a4 5b 5f 67 5c fe 34 89 f3 4a 57 d1 5a 41 d6 1c 7d ea 7a 3f cd 34 79 f2 94 c2 ad cb 94 7d]
+                Reversing byte order for ECDSA_KEY_P384_L hardware peripheral...
+                'KEY_PURPOSE_1': 'USER' -> 'ECDSA_KEY_P384_L'.
+                Disabling write to 'KEY_PURPOSE_1'...
+                Disabling write to key block...
+
+        Keys will remain readable (due to --no-read-protect).
+
+        Check all blocks for burn...
+        idx, BLOCK_NAME,          Conclusion
+        [00] BLOCK0               is empty, will burn the new value
+        [04] BLOCK_KEY0           is empty, will burn the new value
+        [05] BLOCK_KEY1           is empty, will burn the new value
+        .
+        This is an irreversible operation!
+        Type 'BURN' (all capitals) to continue.
+        BURN
+        BURN BLOCK5  - OK (write block == read block)
+        BURN BLOCK4  - OK (write block == read block)
+        BURN BLOCK0  - OK (write block == read block)
+        Reading updated eFuses...
+        Successful.
+
+    .. note::
+
+        The flags ``--no-read-protect`` and ``--show-sensitive-info`` in this command are used for demonstration purposes only, to show the key byte order. The ECDSA_KEY keys is always written in reverse byte order. The 48 bytes of the key are extracted from the provided PEM file, and 16 padding bytes are added to form a total of 64 bytes for two eFuse blocks. Due to the required reverse byte order, the last 16 bytes of the key plus 16 padding bytes are written to BLOCK_KEY0 with the key purpose ``ECDSA_KEY_P384_H``, and the remaining 32 bytes are written to the next available eFuse block (here, BLOCK_KEY1) with the key purpose ``ECDSA_KEY_P384_L``.

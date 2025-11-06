@@ -3,7 +3,7 @@
 Embedding into Custom Scripts
 =============================
 
-``esptool.py`` can be easily integrated into Python applications or called from other Python scripts.
+``esptool`` can be easily integrated into Python applications or called from other Python scripts.
 
 Using Esptool as a Python Module
 --------------------------------
@@ -233,7 +233,7 @@ For granular control and more configuration freedom, you can directly access the
 
 .. note::
 
-    This example code is a very basic implementation of ``esptool.py -p /dev/ttyACM0 write-flash 0x10000 firmware.bin``
+    This example code is a very basic implementation of ``esptool -p /dev/ttyACM0 write-flash 0x10000 firmware.bin``
 
 .. code-block:: python
 
@@ -328,6 +328,10 @@ Esptool allows redirecting output by implementing a custom logger class. This ca
             percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
             self.print(f"Finished: {percent}%")
 
+        def set_verbosity(self, verbosity):
+            # Set verbosity level not needed in this example
+            pass
+
     # Replace the default logger with the custom logger
     log.set_logger(CustomLogger())
 
@@ -344,9 +348,10 @@ To ensure compatibility with esptool, the custom logger should re-implement (or 
 - ``error``: Logs error messages.
 - ``stage``: Starts or ends a collapsible output stage.
 - ``progress_bar``: Displays a progress bar.
+- ``set_verbosity``: Sets the verbosity level for logging.
 
 .. autoclass:: esptool.logger.EsptoolLogger
-   :members: print, note, warning, error, stage, progress_bar
+   :members: print, note, warning, error, stage, progress_bar, set_verbosity
    :member-order: bysource
 
-These methods are essential for maintaining proper integration and behavior with esptool. Additionally, all output printing should be made using ``log.print()`` (or the respective method, such as ``log.info()`` or ``log.warning()``) instead of the standard ``print()`` function to ensure the output is routed through the custom logger. This ensures consistency and allows the custom logger to handle all output appropriately. You can further customize this logger to fit your application's needs, such as integrating with GUI components or advanced logging frameworks.
+These methods are essential for maintaining proper integration and behavior with esptool. Additionally, all output printing should be made using ``log.print()`` (or the respective method, such as ``log.note()`` or ``log.warning()``) instead of the standard ``print()`` function to ensure the output is routed through the custom logger. This ensures consistency and allows the custom logger to handle all output appropriately. You can further customize this logger to fit your application's needs, such as integrating with GUI components or advanced logging frameworks.

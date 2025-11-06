@@ -18,9 +18,11 @@ import sys
 import serial
 
 from esp_rfc2217_server.redirector import Redirector
+from esptool.util import check_deprecated_py_suffix
 
 
 def main():
+    check_deprecated_py_suffix("esp_rfc2217_server")
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -132,7 +134,7 @@ def main():
         except KeyboardInterrupt:
             print(flush=True)
             break
-        except socket.error as msg:
+        except OSError as msg:
             logging.error(str(msg))
 
     logging.info("--- exit ---")

@@ -128,6 +128,19 @@ def get_key_from_value(dict, val):
     return None
 
 
+def check_deprecated_py_suffix(module_name: str) -> None:
+    """Check if called with deprecated .py suffix"""
+    import sys
+    from esptool import log
+
+    script_name = sys.argv[0] if sys.argv else ""
+    if script_name.endswith(module_name + ".py"):
+        log.warning(
+            f"DEPRECATED: '{module_name}.py' is deprecated. Please use '{module_name}' "
+            "instead. The '.py' suffix will be removed in a future major release."
+        )
+
+
 class PrintOnce:
     """
     Class for printing messages just once. Can be useful when running in a loop
@@ -161,23 +174,27 @@ class FatalError(RuntimeError):
 
         err_defs = {
             # ROM error codes
-            0x101: "Out of memory",
-            0x102: "Invalid argument",
-            0x103: "Invalid state",
-            0x104: "Invalid size",
-            0x105: "Requested resource not found",
-            0x106: "Operation or feature not supported",
-            0x107: "Operation timed out",
-            0x108: "Received response was invalid",
-            0x109: "CRC or checksum was invalid",
-            0x10A: "Version was invalid",
-            0x10B: "MAC address was invalid",
-            0x6001: "Flash operation failed",
-            0x6002: "Flash operation timed out",
-            0x6003: "Flash not initialised properly",
-            0x6004: "Operation not supported by the host SPI bus",
-            0x6005: "Operation not supported by the flash chip",
-            0x6006: "Can't write, protection enabled",
+            0x100: "Undefined errors",
+            0x101: "The input parameter is invalid",
+            0x102: "Failed to malloc memory from system",
+            0x103: "Failed to send out message",
+            0x104: "Failed to receive message",
+            0x105: "The format of the received message is invalid",
+            0x106: "Message is ok, but the running result is wrong",
+            0x107: "Checksum error",
+            0x108: "Flash write error",
+            0x109: "Flash read error",
+            0x10A: "Flash read length error",
+            0x10B: "Deflate failed error",
+            0x10C: "Deflate Adler32 error",
+            0x10D: "Deflate parameter error",
+            0x10E: "Invalid RAM binary size",
+            0x10F: "Invalid RAM binary address",
+            0x164: "Invalid parameter",
+            0x165: "Invalid format",
+            0x166: "Description too long",
+            0x167: "Bad encoding description",
+            0x169: "Insufficient storage",
             # Flasher stub error codes
             0xC000: "Bad data length",
             0xC100: "Bad data checksum",
@@ -208,8 +225,7 @@ class NotImplementedInROMError(FatalError):
     def __init__(self, bootloader, func):
         FatalError.__init__(
             self,
-            "%s ROM does not support function %s."
-            % (bootloader.CHIP_NAME, func.__name__),
+            f"{bootloader.CHIP_NAME} ROM does not support function {func.__name__}.",
         )
 
 
@@ -230,7 +246,7 @@ class UnsupportedCommandError(RuntimeError):
 
     def __init__(self, esp, op):
         if esp.secure_download_mode:
-            msg = "This command (0x%x) is not supported in Secure Download Mode" % op
+            msg = f"This command ({op:#x}) is not supported in Secure Download Mode"
         else:
-            msg = "Invalid (unsupported) command 0x%x" % op
+            msg = f"Invalid (unsupported) command {op:#x}"
         RuntimeError.__init__(self, msg)

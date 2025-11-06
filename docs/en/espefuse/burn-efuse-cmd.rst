@@ -3,7 +3,7 @@
 Burn eFuse
 ==========
 
-The ``espefuse.py burn_efuse`` command burns eFuses. The arguments to ``burn_efuse`` are eFuse names (as shown in summary output) and new values.
+The ``espefuse burn-efuse`` command burns eFuses. The arguments to ``burn-efuse`` are eFuse names (as shown in summary output) and new values.
 
 Positional arguments:
 
@@ -16,15 +16,15 @@ Optional arguments:
 
 It can be list of eFuse names and values (like EFUSE_NAME1 1 EFUSE_NAME2 7 EFUSE_NAME3 10 etc.).
 
-New values can be a numeric value in decimal or hex (with "0x" prefix). eFuse bits can only be burned from 0 to 1, attempting to set any back to 0 will have no effect. Most eFuses have a limited bit width (many are only 1-bit flags). Longer eFuses (MAC addresses, keys) can be set with this command, but it's better to use a specific command (``burn_custom_mac``, ``burn_key``) for a specific field.
+New values can be a numeric value in decimal or hex (with "0x" prefix). eFuse bits can only be burned from 0 to 1, attempting to set any back to 0 will have no effect. Most eFuses have a limited bit width (many are only 1-bit flags). Longer eFuses (MAC addresses, keys) can be set with this command, but it's better to use a specific command (``burn-custom-mac``, ``burn-key``) for a specific field.
 
 This command supports simultaneous burning of multiple eFuses, it doesn't matter if they are from different eFuse blocks or not. The format is the same as for burning just one eFuse, just list the eFuse name and value pairs, see the example below.
 
 .. code-block:: none
 
-    > espefuse.py --port /dev/ttyUSB0 burn_efuse   DIS_USB_JTAG 1   VDD_SPI_AS_GPIO 1
+    > espefuse --port /dev/ttyUSB0 burn-efuse   DIS_USB_JTAG 1   VDD_SPI_AS_GPIO 1
 
-    === Run "burn_efuse" command ===
+    === Run "burn-efuse" command ===
     The efuses to burn:
     from BLOCK0
         - DIS_USB_JTAG
@@ -42,7 +42,7 @@ This command supports simultaneous burning of multiple eFuses, it doesn't matter
     This is an irreversible operation!
     Type 'BURN' (all capitals) to continue.
 
-By default, ``espefuse.py`` will ask you to type ``BURN`` before it permanently sets eFuses. The ``--do-not-confirm`` option allows you to bypass this.
+By default, ``espefuse`` will ask you to type ``BURN`` before it permanently sets eFuses. The ``--do-not-confirm`` option allows you to bypass this.
 
 .. code-block:: none
 
@@ -102,4 +102,4 @@ For example:
 
     SPI_PAD_CONFIG_CS0     Override SD_CMD pad (GPIO11/SPICS0)               = 32 R/W (0x1e)
 
-If using the ``burn_efuse`` command to configure these pins, always specify the actual GPIO number you wish to set.
+If using the ``burn-efuse`` command to configure these pins, always specify the actual GPIO number you wish to set.

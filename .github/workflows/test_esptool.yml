@@ -40,6 +40,11 @@ jobs:
         esptool.py --help
         espefuse.py --help
         espsecure.py --help
+        esp_rfc2217_server.py --help
+        esptool --help
+        espefuse --help
+        espsecure --help
+        esp_rfc2217_server --help
 
     - name: Test esptool and components
       run: |
@@ -61,19 +66,3 @@ jobs:
           run: |
             ./ci/download_flasher_stubs.py
             git diff --exit-code
-
-  lint_esptool:
-      runs-on: ubuntu-22.04
-      steps:
-        - name: Checkout
-          uses: actions/checkout@master
-
-        - name: Set up Python 3.10
-          uses: actions/setup-python@master
-          with:
-            python-version: "3.10"
-
-        - name: Run pre-commit hooks
-          run: |
-            pip install --extra-index-url https://dl.espressif.com/pypi -e .[dev]
-            pre-commit run --all-files

@@ -3,7 +3,7 @@
 Advanced Options
 ================
 
-The following advanced global configuration options can be used for all esptool commands. They are placed before the command name on the command line. For example, the option ``--before no-reset`` has to be placed before ``flash-id``. The command should look like this: ``esptool.py --before no-reset flash-id``.
+The following advanced global configuration options can be used for all esptool commands. They are placed before the command name on the command line. For example, the option ``--before no-reset`` has to be placed before ``flash-id``. The command should look like this: ``esptool --before no-reset flash-id``.
 
 For basic/fundamental global configuration options, see the :ref:`options` page.
 
@@ -22,7 +22,7 @@ The ``--before`` argument allows you to specify whether the chip needs resetting
     * ``--before default-reset`` is the default, which uses DTR & RTS serial control lines (see :ref:`entering-the-bootloader`) to try to reset the chip into bootloader mode.
     * ``--before no-reset`` will skip DTR/RTS control signal assignments and just start sending a serial synchronisation command to the chip. This is useful if your chip doesn't have DTR/RTS, or for some serial interfaces (like Arduino board onboard serial) which behave differently when DTR/RTS are toggled.
     * ``--before no-reset-no-sync`` will skip DTR/RTS control signal assignments and skip also the serial synchronization command. This is useful if your chip is already running the :ref:`stub bootloader <stub>` and you want to avoid resetting the chip and uploading the stub again.
-    :esp32c3 or esp32s3 or esp32c6 or esp32h2 or esp32p4 or esp32c5 or esp32c61: * ``--before usb-reset`` will use custom reset sequence for USB-JTAG-Serial (used for example for ESP chips connected through the USB-JTAG-Serial peripheral). Usually, this option doesn't have to be used directly. Esptool should be able to detect connection through USB-JTAG-Serial.
+    :esp32c3 or esp32s3 or esp32c6 or esp32h2 or esp32p4 or esp32c5 or esp32c61 or esp32h21 or esp32h4: * ``--before usb-reset`` will use custom reset sequence for USB-JTAG-Serial (used for example for ESP chips connected through the USB-JTAG-Serial peripheral). Usually, this option doesn't have to be used directly. Esptool should be able to detect connection through USB-JTAG-Serial.
 
 Reset After Operation: ``--after``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -74,7 +74,7 @@ Passing ``--no-stub`` will disable certain options, as not all options are imple
 
     The optional ``--spi-connection`` argument overrides the SPI flash connection configuration on {IDF_TARGET_NAME}. This means that the SPI flash can be connected to other pins, or esptool can be used to communicate with a different SPI flash chip to the default.
 
-    Supply the ``--spi-connection`` argument after the ``esptool.py`` command, ie ``esptool.py flash-id --spi-connection HSPI``.
+    Supply the ``--spi-connection`` argument after the ``esptool`` command, ie ``esptool flash-id --spi-connection HSPI``.
 
     .. note::
 
@@ -162,3 +162,30 @@ at least one FilterValue for each specified FilterType to be considered. Example
     * ``--port-filter serial=7c98d1065267ee11bcc4c8ab93cd958c`` matches ports where the serial number contains the specified text.
 
 See also the `Espressif USB customer-allocated PID repository <https://github.com/espressif/usb-pids>`_
+
+Output Verbosity
+----------------
+
+Output verbosity can be controlled using the ``--verbose`` and ``--silent`` flags.
+
+Verbose output: ``--verbose``, ``-v``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. _verbose:
+
+The ``--verbose``, ``-v`` flag can be used to show all output without any overwriting or collapsing stages into a single line:
+
+.. code-block:: bash
+
+    esptool --verbose flash-id
+
+See :ref:`the trace option <tracing-communications>` if you want to dump all serial interactions to the standard output for debugging purposes.
+
+Silent output: ``--silent``, ``-s``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. _silent:
+
+The ``--silent``, ``-s`` flag can be used to limit the output to errors only:
+
+.. code-block:: bash
+
+    esptool -s write-flash 0x0 image.bin
