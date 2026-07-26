@@ -1,24 +1,147 @@
-<a href="https://www.espressif.com">
-    <img src="https://www.espressif.com/sites/all/themes/espressif/logo-black.svg" align="right" height="20" />
-</a>
+## v5.3.1 (2026-06-26)
 
-# CHANGELOG
+### 🐛 Bug Fixes
 
-> All notable changes to this project are documented in this file.
-> This list is not exhaustive - only important changes, fixes, and new features in the code are reflected here.
+- **espefuse**: Remove non-existent HMAC key purposes for ESP32-C61 *(harshal.patil - ec4fc2a)*
+- **pyinstaller**: Bundle pyserial URL handlers *(Lucas Saavedra Vaz - 1044f3c)*
+- Preserve VID/PID lookup for symlinked ports *(Jaroslav Burian - aea67cd)*
+- Fix operations over USB-Serial/JTAG transport in Secure Download Mode *(Radim Karniš - 6c9ad54)*
+- Raise FatalError instead of leaking StopIteration *(Roland Dobai - 2b5bc8b)*
 
-<div align="center">
-    <a href="https://keepachangelog.com/en/1.1.0/">
-        <img alt="Static Badge" src="https://img.shields.io/badge/Keep%20a%20Changelog-v1.1.0-salmon?logo=keepachangelog&logoColor=black&labelColor=white&link=https%3A%2F%2Fkeepachangelog.com%2Fen%2F1.1.0%2F">
-    </a>
-    <a href="https://www.conventionalcommits.org/en/v1.0.0/">
-        <img alt="Static Badge" src="https://img.shields.io/badge/Conventional%20Commits-v1.0.0-pink?logo=conventionalcommits&logoColor=black&labelColor=white&link=https%3A%2F%2Fwww.conventionalcommits.org%2Fen%2Fv1.0.0%2F">
-    </a>
-    <a href="https://semver.org/spec/v2.0.0.html">
-        <img alt="Static Badge" src="https://img.shields.io/badge/Semantic%20Versioning-v2.0.0-grey?logo=semanticrelease&logoColor=black&labelColor=white&link=https%3A%2F%2Fsemver.org%2Fspec%2Fv2.0.0.html">
-    </a>
-</div>
-<hr>
+### 📖 Documentation
+
+- **stub_flasher**: Document esp-flasher-stub and announce legacy stub deprecation *(Radim Karniš - ff37ef7)*
+
+
+## v5.3.0 (2026-06-01)
+
+### ✨ New Features
+
+- **reset**: support hardware flow control adapters *(Jeija - 9ea2c5c)*
+- **espefuse**: Update efuse table for ESP32-H21 *(Konstantin Kondrashov - 93ef664)*
+- **flasher_stub**: Support USB-Serial/JTAG on ESP32-S31, prevent crashes during clock init *(Radim Karniš - 7a7a3c3)*
+- **test**: Unit tests non-encrypted binaries to encrypted device *(Jakub Kocka - 5d7c203)*
+- **espefuse**: Update efuses for ESP32S31 *(Konstantin Kondrashov - ffbd13f)*
+- **espefuse**: add raw_value to JSON summary output *(Peter Dragun - 905896a)*
+- **esp32s31**: Add stub flasher support *(Radim Karniš - 6e14f2e)*
+- **espefuse**: Add calib efuse fields for ESP32C5 *(Konstantin Kondrashov - 66c472b)*
+- **esptool**: Adds efuse version and pkg efuses for ESP32H4 *(Konstantin Kondrashov - bc55336)*
+- **espefuse**: Update efuse table for ESP32H4 *(Konstantin Kondrashov - c6ef00c)*
+- **esptool**: Disallow erasing key recovery info sectors when FE using KM is enabled *(harshal.patil - f55cf25)*
+- **esp32-p4**: Support ECO7 (rev3.2) *(Radim Karniš - 27463b2)*
+- **stub_flasher**: Print a message when the new stub flasher is being used *(Radim Karniš - 6b812b2)*
+- **esp32c61**: Add large flash support *(Jaroslav Burian - 29aef6a)*
+- **stub_flasher**: Bump new stub to v0.3.0 with ESP32-C2 fixes and ESP32-C61 large flash *(Radim Karniš - d8bc5bd)*
+- **write-flash**: Log which file is being flashed when multiple files are given *(Radim Karniš - dc457d1)*
+- **write-flash**: Fully reflash all data when fast reflash verification fails *(Radim Karniš - 1c16a59)*
+- **espefuse**: Add --after option to reset the chip after the operation is finished *(Peter Dragun - 1b8436f)*
+- Use vid pid detection instead of UARTDEV_BUF_NO *(Vojtech Piroch - 0a5fe5c)*
+- Add support for plugin system for optionally loading stub features *(Roland Dobai - e6697e4)*
+- improve flash connection verification with SFDP register check *(Jan Beran - 3821d83)*
+
+### 🐛 Bug Fixes
+
+- **stub_flasher**: Fix C900 compressed upload error + writing to non-4-byte aligned offsets *(Radim Karniš - 73308b8)*
+- **elf2image**: Correct pad length for ram-only-header flash segments *(Sylvio Alves - c637749)*
+- **esptool**: Use correct address for reading efuses in ESP32-S31 *(Konstantin Kondrashov - 9376b9d)*
+- **stub_flasher**: Print an explanatory error if the stub flasher files are missing *(Radim Karniš - 95b87ea)*
+- **usb_mode_detection**: Enable USB mode detection in Secure Download Mode *(Radim Karniš - 3714d1b)*
+- **esp32h4**: make flash could run at 64MHz since 2nd stage bootloader *(Song Ruo Jing - 974d975)*
+- **espefuse**: Remove the value description of the efuse for ESP32-C5 *(Peter Dragun - f6722ad)*
+- **esp32**: Decode VDD_SDIO eFuse voltage like espefuse summary *(Radim Karniš - 825ad97)*
+- **logger**: declare singleton instance as ClassVar for mypy *(Radim Karniš - 48e4450)*
+- **esp32-s31**: Fix configurable MMU page size support *(armando - 2806d84)*
+- **esp32-p4**: Fix ECO7 early guru meditation errors during boot up *(Radim Karniš - 3f6cb59)*
+- **esp32-s31**: Fix flash manipulation commands *(Radim Karniš - 1d51f72)*
+- **esptool**: Fix incorrect efuse bit mask for SPI_BOOT_CRYPT_CNT_MASK *(harshal.patil - 2a2b86d)*
+- **esp32-c61**: Warn if encryption druring download is disabled *(Radim Karniš - 86c4f71)*
+- **espefuse**: Add checks for efuse names in read and write protect commands *(Peter Dragun - 118fbdb)*
+- security efuse layout for C2/C5/S31 *(Mahavir Jain - 97c20ec)*
+
+### 🔧 Code Refactoring
+
+- **espefuse/fields**: Move MAC field logic to base_fields.py *(Peter Dragun - a3dc123)*
+- **espefuse/fields**: Move common code of EspEfuses to base class *(Peter Dragun - 5e903ce)*
+- **espefuse/fields**: Create EfuseKeyPurposeFieldBase and unite implementations *(Peter Dragun - 889a3ff)*
+- **espefuse/fields**: Move common fields to base_fields.py *(Peter Dragun - 4a2bed1)*
+- **espefuse/fields**: Add type hints and fix formatting *(Peter Dragun - cfafe84)*
+- Add missing ABCs to base classes *(Peter Dragun - 47a43b3)*
+
+
+## v5.2.0 (2026-02-18)
+
+### ✨ New Features
+
+- **stub_flasher**: Adopt new flasher stub *(Radim Karniš - cf9cdb7)*
+- **espefuse**: Add ESP32-E22 support *(Radim Karniš - a47e86f)*
+- **esptool**: Add ESP32-E22 support *(Radim Karniš - ce838cd)*
+- **python**: Support Python v3.14 *(Radim Karniš - 8d201c7)*
+- **espefuse**: Enable ecdsa keys burning support for ESP32-H4 *(nilesh.kale - a02d858)*
+- **write_flash**: Add fast reflashing option to update changed flash sectors only *(Radim Karniš - 5aad298)*
+- **esp32-s31**: Add dedicated UF2 family ID *(Radim Karniš - f9f6428)*
+- **spi_flash**: add flash reset when detecting chip *(C.S.M - 1b57c61)*
+- **efuse**: Adds eFuse for ESP32-H2 revision 1.2 *(Konstantin Kondrashov - 08f4cbb)*
+- **espsecure**: Added --skip-padding flag to sign-data and verify-signature API *(hrushikesh.bhosale - ce5a4ac)*
+- **esp32p4**: Add ECO6 stub flasher support *(Radim Karniš - 9393921)*
+- **esp32p4**: Power on SPI flash chip during the attaching process *(Radim Karniš - 21c802f)*
+- **write-flash**: apply compression only if it reduces the file size *(Jaroslav Safka - 188028d)*
+- **esptool**: Update chip description for ESP32-C2/ESP8684H *(Konstantin Kondrashov - c6f1839)*
+- **espfuse**: Add eFuse flash fields for ESP32-C2/ESP8684H *(Konstantin Kondrashov - b3d4e15)*
+- **espefuse**: Set postpone flag by default *(Konstantin Kondrashov - 23e5ec1)*
+- **esp_hsm_sign**: Use primitive HSM signing mechanisms *(harshal.patil - a1a4e95)*
+- **esp32c5**: Add ECO3 stub flasher support *(Radim Karniš - fc0c984)*
+- **write_flash**: Allow encrypted writes using key from the Key Manager *(harshal.patil - aa1b04a)*
+- Added autocomplete for port and baud rate *(Peter Dragun - 8363cae)*
+- enable compress and encryption together *(Jaroslav Safka - 5d747d8)*
+- Add new target esp32s31 *(C.S.M - 3077627)*
+- Improve ports sorting when autodetection is used *(Jaroslav Burian - ec84fba)*
+
+### 🐛 Bug Fixes
+
+- **esp32-h4**: Fix memory map and disable unsupported watchdog reset *(Radim Karniš - 7728772)*
+- **logger**: Require custom logger to implement the correct interface *(Radim Karniš - deca775)*
+- **log**: Fix warning log for ESP32-S31 *(Roland Dobai - 5920030)*
+- **log**: Remove warning keyword from error outputs *(Roland Dobai - 30808a4)*
+- **write-flash**: Print correct number of bytes and flash offsets when --no-stub *(Radim Karniš - e78ab87)*
+- **esp32-p4**: Fix flash power on sequence with stub flasher *(Radim Karniš - ea62bd0)*
+- **image_cmds**: Print the name of chip in full expanded form *(Radim Karniš - 6b6e0f4)*
+- **erase_region**: Allow erasing past 4MB in ROM and SDM mode *(Radim Karniš - 06794d7)*
+- **write_flash**: Fixed esp32 FE key validation *(Konstantin Kondrashov - 4f1d212)*
+- **espefuse**: Ensure port is closed when creating commands fails *(Peter Dragun - 9646a80)*
+- **espefuse**: Fix decoding error in esp32c5 summary *(Peter Dragun - e49c69a)*
+- **logger**: Always flush output in stage mode *(Peter Dragun - a5c9090)*
+- **usb_mode_detection**: Fix USB mode detection on ESP32-C5 and ESP32-C61 *(Radim Karniš - 81bdb76)*
+- **change_baud**: Disable changing baud rate on ESP32-C2 and ESP32-C5 in SDM *(Radim Karniš - 9286189)*
+- **esp32c6**: Fix ESP32-C6FH8 package detection *(Roland Dobai - d7f1adf)*
+- **esp32c3**: fix usb-serial detection for rev1.1 *(Jaroslav Safka - 8bc2c50)*
+- **write_flash**: Allow --force and --erase-all to be used together *(Radim Karniš - c26e58e)*
+- **write_flash**: Fixed esp32c2 FE key validation *(Konstantin Kondrashov - c02d53f)*
+- **windows**: Limit rich_click version to <1.9.0 *(Peter Dragun - fa97591)*
+- **espefuse**: Fix calibration efuses for ESP32-P4 ECO5 *(Konstantin Kondrashov - a1ca6c9)*
+- **espefuse**: Fix ECDSA key purposes for ESP32-P4 *(Konstantin Kondrashov - ae23ab2)*
+- **espsecure**: Fixed the keyfile arg of the sign-data command by making it optional *(harshal.patil - ee35dda)*
+- **espsecure**: Allow verifying multiple appended ECDSA signatures *(harshal.patil - 9a207b1)*
+- allow bootloader reflash in secure-boot-v2 scheme *(Mahavir Jain - 9d0bdd5)*
+
+### 📖 Documentation
+
+- **write-flash**: Describe fast reflashing and skipping unchanged content *(Radim Karniš - f806d98)*
+- **troubleshooting**: Add known limitations section, describe more errors *(Radim Karniš - 48b71b5)*
+- **image-format**: Improve clarity about flash frequency on esp32-c6 *(Peter Dragun - 97e25ef)*
+- **secure_download_mode**: Explain available commands and serial protocol restrictions in SDM *(Radim Karniš - 73d1c25)*
+- **esp32h4**: Add ESP32-H4 documentation *(Jaroslav Safka - 1b37d3d)*
+- **esp32h21**: Add documentation for ESP32-H21 *(Jaroslav Safka - cacc180)*
+- Add note about setuptools version into troubleshooting guide *(Peter Dragun - bf1371d)*
+- Remove note about GLIBC version from installation instructions *(Peter Dragun - 0bc3879)*
+- Fix autocomplete instructions *(Peter Dragun - af7fd96)*
+
+### 🔧 Code Refactoring
+
+- **esp32-s31**: Remove unused variables *(Radim Karniš - 806e01b)*
+- **espefuse**: Use dataclasses for eFuse definitions *(Peter Dragun - 62e8f46)*
+- **espefuse**: Add type hints to classes in emulate eFuse controller *(Peter Dragun - cf12461)*
+- **espefuse**: Remove custom FatalError and import esptool.FatalError *(Peter Dragun - 87c0415)*
+
 
 ## v5.1.0 (2025-09-15)
 

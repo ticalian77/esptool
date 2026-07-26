@@ -5,9 +5,9 @@
 
 import struct
 
+from ..loader import StubMixin
 from .esp32c3 import ESP32C3ROM
 from .esp32c6 import ESP32C6ROM
-from ..loader import StubMixin
 
 
 class ESP32C61ROM(ESP32C6ROM):
@@ -36,7 +36,7 @@ class ESP32C61ROM(ESP32C6ROM):
     EFUSE_PURPOSE_KEY5_SHIFT = 20
 
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT_REG = EFUSE_RD_REG_BASE
-    EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
+    EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 14
 
     EFUSE_SPI_BOOT_CRYPT_CNT_REG = EFUSE_BASE + 0x030
     EFUSE_SPI_BOOT_CRYPT_CNT_MASK = 0x7 << 23
@@ -70,15 +70,9 @@ class ESP32C61ROM(ESP32C6ROM):
         0: "USER/EMPTY",
         1: "ECDSA_KEY",
         4: "XTS_AES_128_KEY",
-        5: "HMAC_DOWN_ALL",
-        6: "HMAC_DOWN_JTAG",
-        7: "HMAC_DOWN_DIGITAL_SIGNATURE",
-        8: "HMAC_UP",
         9: "SECURE_BOOT_DIGEST0",
         10: "SECURE_BOOT_DIGEST1",
         11: "SECURE_BOOT_DIGEST2",
-        12: "KM_INIT_KEY",
-        15: "XTS_AES_128_KEY_PSRAM",
     }
 
     def get_pkg_version(self):

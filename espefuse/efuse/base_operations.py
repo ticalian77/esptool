@@ -4,25 +4,24 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-from abc import abstractmethod
 import io
-import os
 import json
+import os
 import sys
-from typing import Any, BinaryIO, TextIO
+from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import Any, BinaryIO, TextIO, cast
+
+import rich_click as click
+from bitstring import BitStream
+from rich.markup import escape
 
 import espsecure
-import rich_click as click
-
-from bitstring import BitStream
-
 import esptool
 from esptool.logger import log
 
-from . import base_fields
-from . import util
-from .emulate_efuse_controller_base import EmulateEfuseControllerBase
+from . import base_fields, util
+from .emulate_efuse_controller_base import EfsToken, EmulateEfuseControllerBase
 
 
 class EfuseArgument(click.Argument):
@@ -53,7 +52,9 @@ class EfuseValuePairType(click.ParamType):
         self.efuse_choices = efuse_choices
         self.efuses = efuses
 
-    def convert(self, value: str, param: click.Parameter | None, ctx: click.Context):
+    def convert(
+        self, value: list[str], param: click.Parameter | None, ctx: click.Context | None
+    ):
         def check_efuse_name(efuse_name: str):
             if efuse_name not in self.efuse_choices:
                 raise click.BadParameter(
@@ -92,7 +93,11 @@ class EfuseValuePairType(click.ParamType):
 class CustomMACType(click.ParamType):
     name = "custom_mac"
 
-    def convert(self, value: str, param: click.Parameter | None, ctx: click.Context):
+    def convert(
+        self, value: str, param: click.Parameter | None, ctx: click.Context | None
+    ):
+        if ctx is None:
+            raise click.BadParameter("Internal error: missing click context.")
         return base_fields.CheckArgValue(ctx.obj["efuses"], "CUSTOM_MAC")(value)
 
 
@@ -101,7 +106,7 @@ class TupleParameter(EfuseArgument):
         self.max_arity = kwargs.pop("max_arity", None)
         super().__init__(*args, **kwargs)
 
-    def make_metavar(self, ctx=None) -> str:
+    def make_metavar(self, ctx: click.Context | None = None) -> str:
         if self.nargs == 1:
             return super().make_metavar(ctx)  # type: ignore
         if self.max_arity is None:
@@ -157,6 +162,26 @@ def add_force_write_always(function: Callable):
         "or clear any bit which has already been set.",
         is_flag=True,
         callback=callback,
+        expose_value=False,
+    )(function)
+
+
+def add_show_token(function: Callable):
+    def callback(ctx: click.Context, param: click.Parameter, value: str):
+        ctx.ensure_object(dict)
+        if ctx.obj.get("commands", None) is not None:
+            if not ctx.obj["commands"].efuses.show_token:
+                ctx.obj["commands"].efuses.show_token = value
+
+    return click.option(
+        "--show-token",
+        help="Display the eFuse token dump for the write operation before "
+        "the confirmation prompt. This produces EFSW token. If the goal is "
+        "only to obtain the token, press ENTER to abort (no burning will occur). "
+        "Be aware that this may expose sensitive data.",
+        is_flag=True,
+        callback=callback,
+        expose_value=False,
     )(function)
 
 
@@ -195,7 +220,7 @@ def protect_options(function: Callable):
     return function
 
 
-class BaseCommands:
+class BaseCommands(ABC):
     CHIP_NAME = "auto"
     efuse_lib: type[base_fields.EspEfusesBase] | None = None
     efuses: base_fields.EspEfusesBase
@@ -223,16 +248,21 @@ class BaseCommands:
                 f"({self.CHIP_NAME} != {self.esp.CHIP_NAME})"
             )
 
+    @classmethod
+    def _close_port(
+        cls,
+        esp: esptool.ESPLoader | EmulateEfuseControllerBase | None,
+        external_esp: bool = False,
+    ) -> None:
+        """Close the serial port if it was opened internally."""
+        if esp is not None and not external_esp and isinstance(esp, esptool.ESPLoader):
+            esp._port.close()
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if (
-            self.esp is not None
-            and not self.external_esp
-            and isinstance(self.esp, esptool.ESPLoader)
-        ):
-            self.esp._port.close()
+        self._close_port(self.esp, self.external_esp)
 
     ################################# CLI definitions #################################
 
@@ -259,14 +289,14 @@ class BaseCommands:
             required=True,
             nargs=-1,
             type=EfuseValuePairType(
-                [e.name for e in efuses]
-                + [name for e in efuses for name in e.alt_names if name != ""],
+                [name for e in efuses for name in e.all_names],
                 self.efuses,
             ),
         )
         @click.option(
             "--force", is_flag=True, help="Suppress errors when burning eFuses."
         )
+        @add_show_token
         @click.pass_context
         def burn_efuse_cli(ctx, name_value_pairs, force):
             self.burn_efuse(name_value_pairs, force)
@@ -276,7 +306,20 @@ class BaseCommands:
             help="Disable readback for the selected eFuse with the specified name.",
             short_help="Disable readback for the eFuse.",
         )
-        @click.argument("efuse_name", nargs=-1, required=True)
+        @click.argument(
+            "efuse_name",
+            nargs=-1,
+            required=True,
+            type=click.Choice(
+                [
+                    name
+                    for e in efuses
+                    if e.read_disable_bit is not None
+                    for name in e.all_names
+                ]
+            ),
+        )
+        @add_show_token
         @click.pass_context
         def read_protect_efuse_cli(ctx, efuse_name):
             self.read_protect_efuse(efuse_name)
@@ -286,7 +329,20 @@ class BaseCommands:
             help="Disable writing to the eFuse with the specified name.",
             short_help="Disable writing to the eFuse.",
         )
-        @click.argument("efuse_name", nargs=-1, required=True)
+        @click.argument(
+            "efuse_name",
+            nargs=-1,
+            required=True,
+            type=click.Choice(
+                [
+                    name
+                    for e in efuses
+                    if e.write_disable_bit is not None
+                    for name in e.all_names
+                ]
+            ),
+        )
+        @add_show_token
         def write_protect_efuse_cli(efuse_name):
             """Disable writing to the eFuse with the specified name."""
             self.write_protect_efuse(efuse_name)
@@ -321,12 +377,17 @@ class BaseCommands:
             help="Byte offset in the eFuse block.",
         )
         @add_force_write_always
+        @add_show_token
         def burn_block_data_cli(block_datafile, offset, **kwargs):
             block, datafile = zip(*block_datafile)
             self.burn_block_data(block, datafile, offset)
 
         @cli.command("burn-bit")
-        @click.argument("block", required=True)
+        @click.argument(
+            "block",
+            required=True,
+            type=click.Choice(self.efuses.BURN_BLOCK_DATA_NAMES),
+        )
         @click.argument(
             "bit_number",
             nargs=-1,
@@ -334,6 +395,7 @@ class BaseCommands:
             required=True,
         )
         @add_force_write_always
+        @add_show_token
         def burn_bit_cli(block, bit_number, **kwargs):
             """Burn bit in the eFuse block."""
             self.burn_bit(block, bit_number)
@@ -341,11 +403,12 @@ class BaseCommands:
         @cli.command("dump")
         @click.option(
             "--format",
-            type=click.Choice(["default", "split", "joint"]),
+            type=click.Choice(["default", "split", "joint", "token"]),
             default="default",
             help="Select the dump format: default - usual console eFuse dump; "
             "joint - all eFuse blocks are stored in one file; "
-            "split - each eFuse block is placed into its own file.",
+            "split - each eFuse block is placed into its own file. "
+            "token - dump read area of efuses in EFSR token format.",
         )
         @click.option(
             "--file-name",
@@ -366,15 +429,16 @@ class BaseCommands:
             default="summary",
             help="Select the summary format.",
         )
+        @click.option("--active", is_flag=True, help="Show only active eFuses.")
         @click.option(
             "--file",
             type=click.File("w"),
             default=sys.stdout,
             help="File to save the eFuse summary to.",
         )
-        def summary_cli(format, file, efuses_to_show=[]):
+        def summary_cli(format, file, efuses_to_show=[], active=False):
             """Print human-readable summary of eFuse values."""
-            self.summary(efuses_to_show, format, file)
+            self.summary(efuses_to_show, format, file, active)
 
         @cli.command("check-error")
         @click.option(
@@ -407,6 +471,7 @@ class BaseCommands:
             type=CustomMACType(),
         )
         @add_force_write_always
+        @add_show_token
         def burn_custom_mac_cli(mac, **kwargs):
             self.burn_custom_mac(mac)
 
@@ -453,7 +518,7 @@ class BaseCommands:
     def _key_block_is_unused(
         self,
         block: base_fields.EfuseBlockBase,
-        key_purpose_block: base_fields.EfuseBlockBase,
+        key_purpose_block: base_fields.EfuseFieldBase,
     ) -> bool:
         """Helper method to check if a key block is available for use"""
         if not block.is_readable() or not block.is_writeable():
@@ -482,7 +547,7 @@ class BaseCommands:
         key_blocks = [b for b in key_blocks if b.name not in block_name_list]
 
         for block in key_blocks:
-            key_purpose_block = self.efuses[block.key_purpose_name]
+            key_purpose_block = self.efuses[cast(str, block.key_purpose_name)]
             if self._key_block_is_unused(block, key_purpose_block):
                 return block
 
@@ -630,13 +695,16 @@ class BaseCommands:
         efuses_to_show: list[str] = [],
         format: str = "summary",
         file: TextIO = sys.stdout,
+        active: bool = False,
     ):
         """
         Print a human-readable or json summary of eFuse contents.
 
         Args:
             efuses_to_show: List of eFuse names to show.
-            format: Format to use for the summary.
+            format: Format to use for the summary. Supported: "summary", "json",
+                "value_only".
+            active: Print only fields that are non-zero or with protections.
             file: File to write the summary to.
         """
         ROW_FORMAT = "%-50s %-50s%s = %s %s %s"
@@ -650,7 +718,7 @@ class BaseCommands:
         json_efuse = {}
         summary_efuse = []
         if file != sys.stdout:
-            log.print("Saving eFuse values to " + file.name)
+            log.print("Saving eFuse values to " + escape(file.name))
         if human_output and not value_only:
             summary_efuse.append(
                 ROW_FORMAT.replace("-50", "-12")
@@ -686,6 +754,7 @@ class BaseCommands:
                 base_value = e.get_meaning()
                 value = str(base_value)
                 if not readable:
+                    # replace value with '?' if not readable and all bits are 0
                     count_read_disable_bits = e.get_count_read_disable_bits()
                     if count_read_disable_bits == 2:
                         # On the C2 chip, BLOCK_KEY0 has two read protection bits [0, 1]
@@ -695,8 +764,21 @@ class BaseCommands:
                             if not e.is_readable(blk_part=i):
                                 v[i] = v[i].replace("0", "?")
                         value = "".join(v)
-                    else:
+                    elif e.get_bitstring().all(False):
                         value = value.replace("0", "?")
+
+                field_info = e.get_info()
+                # flag is set it means we show fields that are active
+                if active:
+                    is_active = (
+                        "[error]" in field_info
+                        or not e.get_bitstring().all(False)
+                        or not readable
+                        or not writeable
+                    )
+                    if not is_active:
+                        # skipping non-active fields
+                        continue
                 if (
                     human_output
                     and (not do_filtering or e.name in efuses_to_show)
@@ -705,7 +787,7 @@ class BaseCommands:
                     summary_efuse.append(
                         ROW_FORMAT
                         % (
-                            e.get_info(),
+                            field_info,
                             e.description[:50],
                             "\n  " if len(value) > 20 else "",
                             value,
@@ -728,6 +810,9 @@ class BaseCommands:
                     json_efuse[e.name] = {
                         "name": e.name,
                         "value": base_value if readable else value,
+                        "raw_value": util.json_raw_value_hex(
+                            e.efuse_type, e.get_bitstring()
+                        ),
                         "readable": readable,
                         "writeable": writeable,
                         "description": e.description,
@@ -753,7 +838,7 @@ class BaseCommands:
                 )
         if human_output:
             for line in summary_efuse:
-                log.print(line, file=file)
+                log.print(escape(line), file=file)
             if file != sys.stdout:
                 file.close()
                 log.print("Done")
@@ -770,6 +855,7 @@ class BaseCommands:
                 - "default": Print the dump to the console.
                 - "split": Dump each eFuse block to a separate file.
                 - "joint": Dump all eFuse blocks to a single file.
+                - "token": Dump read area of efuses in EFSR token format.
             file_name: File to write the dump to. If not provided, the dump will
                 be printed to the console.
         """
@@ -803,7 +889,7 @@ class BaseCommands:
                 if not to_console:
                     fname, fextension = os.path.splitext(file_name)  # type: ignore
                     file_dump_name = f"{fname}{block.id}{fextension}"
-                    log.print(f"Dump eFuse block{block.id} -> {file_dump_name}")
+                    log.print(f"Dump eFuse block{block.id} -> {escape(file_dump_name)}")
                     dump_file = open(file_dump_name, "wb")
                 output_block_to_file(block, dump_file, to_console)
                 if not to_console:
@@ -811,12 +897,31 @@ class BaseCommands:
         elif format == "joint":
             # all eFuse blocks are stored in one file
             if not to_console:
-                log.print(f"Dump eFuse blocks -> {file_name}")
+                log.print(f"Dump eFuse blocks -> {escape(str(file_name))}")
                 dump_file = open(file_name, "wb")  # type: ignore
             for block in self.efuses.blocks:
                 output_block_to_file(block, dump_file, to_console)
             if not to_console:
                 dump_file.close()
+        elif format == "token":
+            errors_regs = self.efuses.REGS.ERRORS
+            token = EfsToken.build(
+                self.esp.CHIP_NAME,
+                self.esp.get_chip_revision(),
+                self.efuses.blocks,
+                [self.esp.read_reg(addr) for _, addr in enumerate(errors_regs)],
+                "EFSR",
+            )
+            if to_console:
+                log.print(token)
+            else:
+                if file_name is None:
+                    raise esptool.FatalError(
+                        "No file name provided for eFuse token dump"
+                    )
+                log.print(f"eFuse token dump -> {escape(str(file_name))}")
+                with open(file_name, "w") as f:
+                    f.write(token)
 
     def burn_efuse(self, name_value_pairs: dict[str, str], force: bool = False):
         """
@@ -874,7 +979,7 @@ class BaseCommands:
         log.print(f"\nBurning eFuses{attention}:")
         for efuse, new_value in zip(burn_efuses_list, new_value_list):
             log.print(
-                f"    - '{efuse.name}' ({efuse.description}) "
+                f"    - '{efuse.name}' ({escape(str(efuse.description))}) "
                 f"{efuse.get_bitstring()} -> {efuse.convert_to_bitstring(new_value)}"
             )
             efuse.save(new_value)
@@ -985,20 +1090,19 @@ class BaseCommands:
                         not self.efuses["XTS_KEY_LENGTH_256"].get()
                         and efuse_name == "BLOCK_KEY0"
                     )
-                    error |= self.efuses["SECURE_BOOT_EN"].get() and efuse_name in [
-                        "BLOCK_KEY0",
-                        "BLOCK_KEY0_HI_128",
-                    ]
+                    error |= cast(
+                        bool, self.efuses["SECURE_BOOT_EN"].get()
+                    ) and efuse_name in ["BLOCK_KEY0", "BLOCK_KEY0_HI_128"]
                     if error:
                         raise esptool.FatalError(
                             f"{efuse_name} must be readable, stop this operation!"
                         )
                 else:
-                    for block in self.efuses.Blocks.BLOCKS:
-                        block = self.efuses.Blocks.get(block)
+                    for block_tuple in self.efuses.Blocks.BLOCKS:
+                        block = self.efuses.Blocks.get(block_tuple)
                         if block.name == efuse_name and block.key_purpose is not None:
                             if not self.efuses[block.key_purpose].need_rd_protect(
-                                self.efuses[block.key_purpose].get()
+                                cast(str, self.efuses[block.key_purpose].get())
                             ):
                                 raise esptool.FatalError(
                                     f"{efuse_name} must be readable, "
@@ -1137,9 +1241,8 @@ class BaseCommands:
                     f"offset {offset}."
                 )
             log.print(
-                "[{:02}] {:20} size={:02} bytes, offset={:02} - > [{}].".format(
-                    block.id, block.name, len(data), offset, util.hexify(data, " ")
-                )
+                f"[{block.id:02d}] {block.name:20} size={len(data):02d} bytes, "
+                f"offset={offset:02d} -> [{util.hexify(data, ' ')}]"
             )
             block.save(data)
 

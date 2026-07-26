@@ -5,37 +5,61 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import reedsolo
+from bitstring import BitStream
 
+from espefuse.efuse.mem_definition_base import BlockDefinition
+from esptool import FatalError
+
+from ..emulate_efuse_controller_base import EmulateEfuseControllerBase
 from .mem_definition import EfuseDefineBlocks, EfuseDefineFields, EfuseDefineRegisters
-from ..emulate_efuse_controller_base import EmulateEfuseControllerBase, FatalError
 
 
 class EmulateEfuseController(EmulateEfuseControllerBase):
     """The class for virtual efuse operation. Using for HOST_TEST."""
 
     CHIP_NAME = "ESP32-P4"
-    mem = None
-    debug = False
+    Blocks: type[EfuseDefineBlocks]
+    Fields: EfuseDefineFields
+    REGS: type[EfuseDefineRegisters]
 
-    def __init__(self, efuse_file=None, debug=False):
+    def __init__(
+        self,
+        efuse_file: str | None = None,
+        debug: bool = False,
+        token_dump: str | None = None,
+    ):
         self.Blocks = EfuseDefineBlocks
         self.Fields = EfuseDefineFields(None)
         self.REGS = EfuseDefineRegisters
-        super().__init__(efuse_file, debug)
+        super().__init__(efuse_file, debug, token_dump=token_dump)
         self.write_reg(self.REGS.EFUSE_CMD_REG, 0)
+
+    def set_major_chip_version(self, version):
+        version &= 0x7
+        if version:
+            # Major version bit 2 is stored in bit 23
+            self.direct_write_efuse(2, ((version & 0x4) >> 2) << 23, block=1)
+            # Major version bits 1:0 are stored in bits 5:4
+            self.direct_write_efuse(2, (version & 0x3) << 4, block=1)
+
+    def set_minor_chip_version(self, version):
+        version &= 0x0F
+        if version:
+            self.direct_write_efuse(2, version << 0, block=1)
 
     """ esptool method start >>"""
 
-    def get_major_chip_version(self):
-        return 3
-
     def get_minor_chip_version(self):
-        return 0
+        return (self.read_efuse(2, block=1) >> 0) & 0x0F
 
-    def get_crystal_freq(self):
+    def get_major_chip_version(self):
+        word = self.read_efuse(2, block=1)
+        return (((word >> 23) & 1) << 2) | ((word >> 4) & 0x03)
+
+    def get_crystal_freq(self) -> int:
         return 40  # MHz (common for all chips)
 
-    def get_security_info(self):
+    def get_security_info(self) -> dict[str, int]:
         return {
             "flags": 0,
             "flash_crypt_cnt": 0,
@@ -46,7 +70,7 @@ class EmulateEfuseController(EmulateEfuseControllerBase):
 
     """ << esptool method end """
 
-    def handle_writing_event(self, addr, value):
+    def handle_writing_event(self, addr: int, value: int) -> None:
         if addr == self.REGS.EFUSE_CMD_REG:
             if value & self.REGS.EFUSE_PGM_CMD:
                 self.copy_blocks_wr_regs_to_rd_regs(updated_block=(value >> 2) & 0xF)
@@ -59,7 +83,7 @@ class EmulateEfuseController(EmulateEfuseControllerBase):
                 self.write_reg(self.REGS.EFUSE_CMD_REG, 0)
                 self.save_to_file()
 
-    def get_bitlen_of_block(self, blk, wr=False):
+    def get_bitlen_of_block(self, blk: BlockDefinition, wr: bool = False) -> int:
         if blk.id == 0:
             if wr:
                 return 32 * 8
@@ -72,7 +96,7 @@ class EmulateEfuseController(EmulateEfuseControllerBase):
             else:
                 return 32 * blk.len
 
-    def handle_coding_scheme(self, blk, data):
+    def handle_coding_scheme(self, blk: BlockDefinition, data: BitStream) -> BitStream:
         if blk.id != 0:
             # CODING_SCHEME RS applied only for all blocks except BLK0.
             coded_bytes = 12

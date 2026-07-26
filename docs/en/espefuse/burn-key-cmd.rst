@@ -39,6 +39,7 @@ Optional arguments:
     :not esp32: - ``--no-read-protect``. Disable read-protecting of the key. The key remains readable software. The key with keypurpose [USER, RESERVED and .._DIGEST] will remain readable anyway, but for the rest keypurposes the read-protection will be defined by this option (Read-protect by default).
     - ``--force-write-always``. Write the eFuse key even if it looks like it is already been written, or is write protected. Note that this option can't disable write protection, or clear any bit which has already been set.
     - ``--show-sensitive-info``. Show data to be burned (may expose sensitive data). Enabled if --debug is used. Use this option to see the byte order of the data being written.
+    - ``--show-token``. Display the eFuse token dump for the write operation before the confirmation prompt. This produces an ``EFSW`` token. If the goal is only to obtain the token, press ENTER to abort (no burning will occur). See :ref:`Token Dump <token>` section for more details on token formats and usage. Be aware that this may expose sensitive data.
 
 .. only:: esp32
 
@@ -72,10 +73,10 @@ Optional arguments:
         :esp32c5: - ECDSA_KEY_P384_H. Upper 32 bytes of the 48-byte ECDSA_P384 key (last 16 bytes of key + 16 padding bytes).
         :esp32c5: - ECDSA_KEY_P384_L. Lower 32 bytes of the 48-byte ECDSA_P384 key.
         - XTS_AES_128_KEY. 256 bit flash encryption key.
-        - HMAC_DOWN_ALL.
-        - HMAC_DOWN_JTAG.
-        - HMAC_DOWN_DIGITAL_SIGNATURE.
-        - HMAC_UP.
+        :not esp32c61: - HMAC_DOWN_ALL.
+        :not esp32c61: - HMAC_DOWN_JTAG.
+        :not esp32c61: - HMAC_DOWN_DIGITAL_SIGNATURE.
+        :not esp32c61: - HMAC_UP.
         - SECURE_BOOT_DIGEST0. 1 secure boot key.
         - SECURE_BOOT_DIGEST1. 2 secure boot key.
         - SECURE_BOOT_DIGEST2. 3 secure boot key.

@@ -28,19 +28,13 @@ jobs:
       EFUSE_DIR: ./espefuse/efuse_defs/
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        if: (matrix.platform != 'linux-armv7') || contains(github.ref_name, 'dev')
+        uses: actions/setup-python@v6
+        if: matrix.platform != 'linux-armv7'
         with:
           python-version: "3.13"
-      - name: Patch version for dev releases
-        if: contains(github.ref_name, 'dev')
-        run: |
-          echo "Patching version for dev release: ${{ github.ref_name }}"
-          python ci/patch_dev_release.py --version ${{ github.ref_name }} esptool/__init__.py
-          git diff
       - name: Build with PyInstaller
         uses: espressif/python-binary-action@master
         with:
@@ -58,16 +52,26 @@ jobs:
             }
           icon-file: ${{ matrix.platform == 'windows-amd64' && 'ci/espressif.ico' || '' }}
           target-platform: ${{ matrix.platform }}
-          additional-arm-packages: 'openssl libffi-dev libssl-dev libffi7'
-          certificate: ${{ secrets.CERTIFICATE }}
-          certificate-password: ${{ secrets.CERTIFICATE_PASSWORD }}
-
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-keyvault-uri: ${{ secrets.AZURE_KEYVAULT_URI }}
+          azure-keyvault-cert-name: ${{ secrets.AZURE_KEYVAULT_CERT_NAME }}
+          macos-signing-identity: ${{ secrets.MACOS_CS_IDENTITY_ID }}
+          macos-certificate: ${{ secrets.MACOS_CS_CERTIFICATE }}
+          macos-certificate-pwd: ${{ secrets.MACOS_CS_CERTIFICATE_PWD }}
+          notarization-username: ${{ secrets.MACOS_CS_APPLE_ID }}
+          notarization-password: ${{ secrets.MACOS_CS_APP_SPECIFIC_PASSWORD }}
+          notarization-team-id: ${{ secrets.MACOS_CS_APPLE_TEAM_ID }}
+          # bitstring 4.4+ loads implementation modules dynamically; bundle the whole package (see bitstring#362).
+          # pyserial URL handlers (socket://, rfc2217://, …) are loaded via importlib at runtime.
+          additional-args: "--collect-submodules=rich._unicode_data --collect-submodules=bitstring --collect-submodules=serial.urlhandler"
       - name: Add license and readme
         shell: bash
         run: mv LICENSE README.md ./${{ env.DISTPATH }}
 
       - name: Archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.DISTPATH }}
           path: ${{ env.DISTPATH }}
@@ -87,7 +91,7 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
         shell: bash
       - name: Checkout
-        uses: actions/checkout@master
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install dependencies
@@ -98,7 +102,7 @@ jobs:
           cz changelog ${{ steps.get_version.outputs.VERSION }} --template ci/gh_changelog_template.md.j2 --file-name changelog_body.md
           cat changelog_body.md
       - name: Download built binaries
-        uses: actions/download-artifact@master
+        uses: actions/download-artifact@v8
       - name: Compress and rename binaries
         run: |
           for dir in esptool-*; do
@@ -111,7 +115,7 @@ jobs:
           done
       - name: Create release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

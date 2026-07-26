@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+from dataclasses import dataclass
 
 import yaml
 
@@ -16,6 +17,7 @@ from ..mem_definition_base import (
 )
 
 
+@dataclass(frozen=True)
 class EfuseDefineRegisters(EfuseRegistersBase):
     EFUSE_MEM_SIZE = 0x01FC + 4
 
@@ -75,6 +77,16 @@ class EfuseDefineRegisters(EfuseRegistersBase):
     # EFUSE_DAC_CONF_REG
     EFUSE_DAC_NUM_S = 9
     EFUSE_DAC_NUM_M = 0xFF << EFUSE_DAC_NUM_S
+
+    ERRORS = [
+        EFUSE_RD_REPEAT_ERR0_REG,
+        EFUSE_RD_REPEAT_ERR1_REG,
+        EFUSE_RD_REPEAT_ERR2_REG,
+        EFUSE_RD_REPEAT_ERR3_REG,
+        EFUSE_RD_REPEAT_ERR4_REG,
+        EFUSE_RD_RS_ERR0_REG,
+        EFUSE_RD_RS_ERR1_REG,
+    ]
 
 
 class EfuseDefineBlocks(EfuseBlocksBase):
@@ -150,30 +162,34 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
-        f = Field()
-        f.name = "WAFER_VERSION_MAJOR"
-        f.block = 0
-        f.bit_len = 3
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "wafer"
-        f.description = "calc WAFER VERSION MAJOR from (WAFER_VERSION_MAJOR_HI << 2) + WAFER_VERSION_MAJOR_LO (read only)"
-        self.CALC.append(f)
+        self.CALC.append(
+            Field(
+                name="WAFER_VERSION_MAJOR",
+                block=0,
+                bit_len=3,
+                type="uint",
+                category="identity",
+                class_type="wafer",
+                description="calc WAFER VERSION MAJOR from (WAFER_VERSION_MAJOR_HI << 2) + WAFER_VERSION_MAJOR_LO (read only)",
+            )
+        )
 
         if any(
             efuse is not None
             and getattr(efuse, "name", None) == "RECOVERY_BOOTLOADER_FLASH_SECTOR_0_1"
             for efuse in self.ALL_EFUSES
         ):
-            f = Field()
-            f.name = "RECOVERY_BOOTLOADER_FLASH_SECTOR"
-            f.block = 0
-            f.bit_len = 12
-            f.type = f"uint:{f.bit_len}"
-            f.category = "config"
-            f.class_type = "recovery_bootloader"
-            f.description = "recovery_bootloader = RECOVERY_BOOTLOADER_FLASH_SECTOR_0_1 + 2_2 + 3_6 + 7_7 + 8_10 + 11_11"
-            self.CALC.append(f)
+            self.CALC.append(
+                Field(
+                    name="RECOVERY_BOOTLOADER_FLASH_SECTOR",
+                    block=0,
+                    bit_len=12,
+                    type="uint",
+                    category="config",
+                    class_type="recovery_bootloader",
+                    description="recovery_bootloader = RECOVERY_BOOTLOADER_FLASH_SECTOR_0_1 + 2_2 + 3_6 + 7_7 + 8_10 + 11_11",
+                )
+            )
 
         for efuse in self.ALL_EFUSES:
             if efuse is not None:

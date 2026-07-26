@@ -6,6 +6,7 @@
 
 import copy
 import os
+from dataclasses import dataclass
 
 import yaml
 
@@ -16,6 +17,7 @@ from ..mem_definition_base import (
 )
 
 
+@dataclass(frozen=True)
 class EfuseDefineRegisters(EfuseRegistersBase):
     EFUSE_MEM_SIZE = 0x01FC + 4
 
@@ -62,6 +64,11 @@ class EfuseDefineRegisters(EfuseRegistersBase):
     # EFUSE_DAC_CONF_REG
     EFUSE_DAC_NUM_S = 9
     EFUSE_DAC_NUM_M = 0xFF << EFUSE_DAC_NUM_S
+
+    ERRORS = [
+        EFUSE_RD_REPEAT_ERR_REG,
+        EFUSE_RD_RS_ERR_REG,
+    ]
 
 
 class EfuseDefineBlocks(EfuseBlocksBase):

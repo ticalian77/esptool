@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2014-2025 Fredrik Ahlberg, Angus Gratton,
+# SPDX-FileCopyrightText: 2014-2026 Fredrik Ahlberg, Angus Gratton,
 # Espressif Systems (Shanghai) CO LTD, other contributors as noted.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -14,6 +14,7 @@ import tempfile
 from typing import IO
 
 from intelhex import HexRecordError, IntelHex
+from rich.markup import escape
 
 from .loader import ESPLoader
 from .logger import log
@@ -23,16 +24,18 @@ from .targets import (
     ESP32C5ROM,
     ESP32C6ROM,
     ESP32C61ROM,
+    ESP32E22ROM,
     ESP32H2ROM,
-    ESP32H21ROM,
     ESP32H4ROM,
+    ESP32H21ROM,
     ESP32P4ROM,
     ESP32ROM,
     ESP32S2ROM,
     ESP32S3ROM,
+    ESP32S31ROM,
     ESP8266ROM,
 )
-from .util import FatalError, byte, ImageSource, get_bytes, pad_to
+from .util import FatalError, ImageSource, byte, get_bytes, pad_to
 
 
 def align_file_position(f, size):
@@ -129,10 +132,12 @@ def LoadFirmwareImage(chip: str, image_data: ImageSource):
             "esp32c6": ESP32C6FirmwareImage,
             "esp32c61": ESP32C61FirmwareImage,
             "esp32c5": ESP32C5FirmwareImage,
+            "esp32e22": ESP32E22FirmwareImage,
             "esp32h2": ESP32H2FirmwareImage,
             "esp32h21": ESP32H21FirmwareImage,
             "esp32p4": ESP32P4FirmwareImage,
             "esp32h4": ESP32H4FirmwareImage,
+            "esp32s31": ESP32S31FirmwareImage,
         }[chip](f)
 
 
@@ -275,7 +280,7 @@ class BaseFirmwareImage:
     def warn_if_unusual_segment(self, offset, size, is_irom_segment):
         if not is_irom_segment:
             if offset > 0x40200000 or offset < 0x3FFE0000 or size > 65536:
-                log.warning(f"Suspicious segment {offset:#x}, length {size}")
+                log.warn(f"Suspicious segment {offset:#x}, length {size}")
 
     def maybe_patch_segment_data(self, f, segment_data):
         """
@@ -446,7 +451,8 @@ class BaseFirmwareImage:
                 ):
                     log.note(
                         f"Inserting {next_elem.addr - (elem.addr + len(elem.data))} "
-                        f"bytes padding between {elem.name} and {next_elem.name}"
+                        f"bytes padding between {escape(str(elem.name))} and "
+                        f"{escape(str(next_elem.name))}"
                     )
                     elem.pad_until_addr(elem_pad_addr)
             if all(
@@ -484,7 +490,7 @@ class BaseFirmwareImage:
         if not self.MMU_PAGE_SIZE_CONF and size != self.IROM_ALIGN:
             # For chips where MMU page size cannot be set or is fixed, just log a
             # warning and use default if there is one.
-            log.warning(
+            log.warn(
                 "Changing MMU page size is not supported on "
                 f"{self.ROM_LOADER.CHIP_NAME}! Defaulting to "
                 f"{self.IROM_ALIGN // 1024}KB."
@@ -586,7 +592,7 @@ class ESP8266V2FirmwareImage(BaseFirmwareImage):
             if segments != self.IMAGE_V2_SEGMENT:
                 # segment count is not really segment count here,
                 # but we expect to see '4'
-                log.warning(
+                log.warn(
                     f'V2 header has unexpected "segment" count {segments} (usually 4)'
                 )
 
@@ -607,19 +613,19 @@ class ESP8266V2FirmwareImage(BaseFirmwareImage):
             segments = self.load_common_header(load_file, ESPLoader.ESP_IMAGE_MAGIC)
 
             if first_flash_mode != self.flash_mode:
-                log.warning(
+                log.warn(
                     f"Flash mode value in first header ({first_flash_mode:#04x}) "
                     f"disagrees with second ({self.flash_mode:#04x}). "
                     "Using second value."
                 )
             if first_flash_size_freq != self.flash_size_freq:
-                log.warning(
+                log.warn(
                     "Flash size/freq value in first header "
                     f"({first_flash_size_freq:#04x}) disagrees with second "
                     f"({self.flash_size_freq:#04x}). Using second value."
                 )
             if first_entrypoint != self.entrypoint:
-                log.warning(
+                log.warn(
                     f"Entrypoint address in first header ({first_entrypoint:#010x}) "
                     f"disagrees with second header ({self.entrypoint:#010x}). "
                     "Using second value."
@@ -866,7 +872,12 @@ class ESP32FirmwareImage(BaseFirmwareImage):
                 # reversing to match the same section order from linker script
                 flash_segments.reverse()
                 for segment in flash_segments:
-                    pad_len = get_alignment_data_needed(segment)
+                    # Pad data length so that, once the pad header and the
+                    # next flash segment header are written, the file
+                    # position matches the flash segment's alignment.
+                    pad_len = (
+                        segment.addr - f.tell() - 2 * self.SEG_HEADER_LEN
+                    ) % self.IROM_ALIGN
                     # Some chips have a non-zero load offset (eg. 0x1000)
                     # therefore we shift the ROM segments "-load_offset"
                     # so it will be aligned properly after it is flashed
@@ -1006,7 +1017,7 @@ class ESP32FirmwareImage(BaseFirmwareImage):
 
         self.chip_id = fields[4]
         if self.chip_id != self.ROM_LOADER.IMAGE_CHIP_ID:
-            log.warning(
+            log.warn(
                 f"Unexpected chip ID in image. Expected {self.ROM_LOADER.IMAGE_CHIP_ID}"
                 f" but value was {self.chip_id}. Is this image for a different "
                 "chip model?"
@@ -1158,7 +1169,7 @@ class ESP8266V3FirmwareImage(ESP32FirmwareImage):
 
         # remaining fields in the middle should all be zero
         if any(f for f in fields[4:15] if f != 0):
-            log.warning(
+            log.warn(
                 "Some reserved header fields have non-zero values. "
                 "This image may be from a newer esptool?"
             )
@@ -1266,6 +1277,25 @@ class ESP32H21FirmwareImage(ESP32C6FirmwareImage):
 
 
 ESP32H21ROM.BOOTLOADER_IMAGE = ESP32H21FirmwareImage
+
+
+class ESP32S31FirmwareImage(ESP32C5FirmwareImage):
+    """ESP32S31 Firmware Image almost exactly the same as ESP32C5FirmwareImage"""
+
+    ROM_LOADER = ESP32S31ROM
+    MMU_PAGE_SIZE_CONF = (32768, 65536, 131072, 262144)
+
+
+ESP32S31ROM.BOOTLOADER_IMAGE = ESP32S31FirmwareImage
+
+
+class ESP32E22FirmwareImage(ESP32FirmwareImage):
+    """ESP32E22 Firmware Image almost exactly the same as ESP32FirmwareImage"""
+
+    ROM_LOADER = ESP32E22ROM
+
+
+ESP32E22ROM.BOOTLOADER_IMAGE = ESP32E22FirmwareImage
 
 
 class ELFFile:
@@ -1381,7 +1411,7 @@ class ELFFile:
             shstrndx * self.LEN_SEC_HEADER
         )
         if sec_type != SEC_TYPE_STRTAB:
-            log.warning(f"ELF file has incorrect STRTAB section type {sec_type:#04x}")
+            log.warn(f"ELF file has incorrect STRTAB section type {sec_type:#04x}")
         f.seek(sec_offs)
         string_table = f.read(sec_size)
 
@@ -1409,7 +1439,7 @@ class ELFFile:
                 continue
 
             if sec_type not in KNOWN_SEC_TYPES:
-                log.warning(f"Unknown section type {sec_type:#04x} in ELF file")
+                log.warn(f"Unknown section type {sec_type:#04x} in ELF file")
                 continue
 
             if sec_type in PROG_SEC_TYPES:

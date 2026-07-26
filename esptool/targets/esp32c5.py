@@ -6,11 +6,11 @@
 import struct
 import time
 
-from .esp32c3 import ESP32C3ROM
-from .esp32c6 import ESP32C6ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
 from ..util import FatalError
+from .esp32c3 import ESP32C3ROM
+from .esp32c6 import ESP32C6ROM
 
 
 class ESP32C5ROM(ESP32C6ROM):
@@ -46,10 +46,10 @@ class ESP32C5ROM(ESP32C6ROM):
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
 
     EFUSE_SPI_BOOT_CRYPT_CNT_REG = EFUSE_BASE + 0x034
-    EFUSE_SPI_BOOT_CRYPT_CNT_MASK = 0x7 << 18
+    EFUSE_SPI_BOOT_CRYPT_CNT_MASK = 0x7 << 16
 
     EFUSE_SECURE_BOOT_EN_REG = EFUSE_BASE + 0x038
-    EFUSE_SECURE_BOOT_EN_MASK = 1 << 20
+    EFUSE_SECURE_BOOT_EN_MASK = 1 << 25
 
     IROM_MAP_START = 0x42000000
     IROM_MAP_END = 0x44000000
@@ -59,8 +59,6 @@ class ESP32C5ROM(ESP32C6ROM):
     PCR_SYSCLK_CONF_REG = 0x60096110
     PCR_SYSCLK_XTAL_FREQ_V = 0x7F << 24
     PCR_SYSCLK_XTAL_FREQ_S = 24
-
-    UARTDEV_BUF_NO = 0x4085F51C  # Variable in ROM .bss which indicates the port in use
 
     FLASH_FREQUENCY = {
         "80m": 0xF,
@@ -145,7 +143,12 @@ class ESP32C5ROM(ESP32C6ROM):
         ESPLoader.hard_reset(self, self.uses_usb_jtag_serial())
 
     def change_baud(self, baud):
-        if not self.IS_STUB:
+        if self.secure_download_mode:  # ESPTOOL-1231
+            log.warn(
+                "Baud rate change is not supported in secure download mode. "
+                "Keeping 115200 baud."
+            )
+        elif not self.IS_STUB:
             crystal_freq_rom_expect = self.get_crystal_freq_rom_expect()
             crystal_freq_detect = self.get_crystal_freq()
             log.print(
@@ -190,6 +193,15 @@ class ESP32C5ROM(ESP32C6ROM):
         ][key_block]
         return (self.read_reg(reg) >> shift) & 0x1F
 
+    def uses_key_manager_for_flash_encryption(self):
+        return bool(
+            (
+                self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
+                >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
+            )
+            & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
+        )
+
     def is_flash_encryption_key_valid(self):
         # Need to see an AES-128 key
         purposes = [
@@ -199,16 +211,13 @@ class ESP32C5ROM(ESP32C6ROM):
         if any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes):
             return True
 
-        return (
-            self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
-            >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
-        ) & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
+        return self.uses_key_manager_for_flash_encryption()
 
     def check_spi_connection(self, spi_connection):
         if not set(spi_connection).issubset(set(range(0, 29))):
             raise FatalError("SPI Pin numbers must be in the range 0-28.")
         if any([v for v in spi_connection if v in [13, 14]]):
-            log.warning(
+            log.warn(
                 "GPIO pins 13 and 14 are used by USB-Serial/JTAG, "
                 "consider using other pins for SPI flash connection."
             )

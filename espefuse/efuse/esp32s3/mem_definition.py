@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+from dataclasses import dataclass
 
 import yaml
 
@@ -16,6 +17,7 @@ from ..mem_definition_base import (
 )
 
 
+@dataclass(frozen=True)
 class EfuseDefineRegisters(EfuseRegistersBase):
     EFUSE_ADDR_MASK = 0x00000FFF
     EFUSE_MEM_SIZE = 0x01FC + 4
@@ -76,6 +78,16 @@ class EfuseDefineRegisters(EfuseRegistersBase):
     # EFUSE_DAC_CONF_REG
     EFUSE_DAC_NUM_S = 9
     EFUSE_DAC_NUM_M = 0xFF << EFUSE_DAC_NUM_S
+
+    ERRORS = [
+        EFUSE_RD_REPEAT_ERR0_REG,
+        EFUSE_RD_REPEAT_ERR1_REG,
+        EFUSE_RD_REPEAT_ERR2_REG,
+        EFUSE_RD_REPEAT_ERR3_REG,
+        EFUSE_RD_REPEAT_ERR4_REG,
+        EFUSE_RD_RS_ERR0_REG,
+        EFUSE_RD_RS_ERR1_REG,
+    ]
 
 
 class EfuseDefineBlocks(EfuseBlocksBase):
@@ -149,25 +161,29 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
-        f = Field()
-        f.name = "WAFER_VERSION_MINOR"
-        f.block = 0
-        f.bit_len = 4
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "wafer"
-        f.description = "calc WAFER VERSION MINOR = WAFER_VERSION_MINOR_HI << 3 + WAFER_VERSION_MINOR_LO (read only)"
-        self.CALC.append(f)
+        self.CALC.append(
+            Field(
+                name="WAFER_VERSION_MINOR",
+                block=0,
+                bit_len=4,
+                type="uint",
+                category="identity",
+                class_type="wafer",
+                description="calc WAFER VERSION MINOR = WAFER_VERSION_MINOR_HI << 3 + WAFER_VERSION_MINOR_LO (read only)",
+            )
+        )
 
-        f = Field()
-        f.name = "PSRAM_CAPACITY"
-        f.block = 0
-        f.bit_len = 3
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "psram_cap"
-        f.description = "calc as = PSRAM_CAP_3 << 2 + PSRAM_CAP (read only)"
-        self.CALC.append(f)
+        self.CALC.append(
+            Field(
+                name="PSRAM_CAPACITY",
+                block=0,
+                bit_len=3,
+                type="uint",
+                category="identity",
+                class_type="psram_cap",
+                description="calc as = PSRAM_CAP_3 << 2 + PSRAM_CAP (read only)",
+            )
+        )
 
         for efuse in self.ALL_EFUSES:
             if efuse is not None:

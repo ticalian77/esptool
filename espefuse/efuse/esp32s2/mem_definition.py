@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+from dataclasses import dataclass
 
 import yaml
 
@@ -16,6 +17,7 @@ from ..mem_definition_base import (
 )
 
 
+@dataclass(frozen=True)
 class EfuseDefineRegisters(EfuseRegistersBase):
     EFUSE_MEM_SIZE = 0x01FC + 4
 
@@ -115,6 +117,16 @@ class EfuseDefineRegisters(EfuseRegistersBase):
         20: (0x1, 0x1, 0x1),
     }
 
+    ERRORS = [
+        EFUSE_RD_REPEAT_ERR0_REG,
+        EFUSE_RD_REPEAT_ERR1_REG,
+        EFUSE_RD_REPEAT_ERR2_REG,
+        EFUSE_RD_REPEAT_ERR3_REG,
+        EFUSE_RD_REPEAT_ERR4_REG,
+        EFUSE_RD_RS_ERR0_REG,
+        EFUSE_RD_RS_ERR1_REG,
+    ]
+
 
 class EfuseDefineBlocks(EfuseBlocksBase):
     __base_rd_regs = EfuseDefineRegisters.DR_REG_EFUSE_BASE
@@ -187,15 +199,17 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
-        f = Field()
-        f.name = "WAFER_VERSION_MINOR"
-        f.block = 0
-        f.bit_len = 4
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "wafer"
-        f.description = "calc WAFER VERSION MINOR = WAFER_VERSION_MINOR_HI << 3 + WAFER_VERSION_MINOR_LO (read only)"
-        self.CALC.append(f)
+        self.CALC.append(
+            Field(
+                name="WAFER_VERSION_MINOR",
+                block=0,
+                bit_len=4,
+                type="uint",
+                category="identity",
+                class_type="wafer",
+                description="calc WAFER VERSION MINOR = WAFER_VERSION_MINOR_HI << 3 + WAFER_VERSION_MINOR_LO (read only)",
+            )
+        )
 
         for efuse in self.ALL_EFUSES:
             if efuse is not None:

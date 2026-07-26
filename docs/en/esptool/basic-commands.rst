@@ -61,13 +61,111 @@ Esptool will display information about which flash memory sectors will be erased
 
 Use the ``-e/--erase-all`` option to erase all flash sectors (not just the write areas) before programming.
 
-.. only:: not esp8266
+Skipping Unchanged Content
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, esptool is set to erase the flash and try to flash the whole content of the provided binaries into flash. However, you can enable a check to skip flashing to save time if the new binary is already present in flash by using the ``--skip-flashed`` (or ``-s``) option. When enabled, esptool computes an MD5 checksum of the flash content and compares it with the new binary. If they match exactly, flashing is skipped entirely and a message is displayed indicating that the content is already in flash.
+
+For larger binaries, checksumming the flash content can take significant time. If you are certain the content needs to be rewritten (e.g., after a flash erase or when you know the content has changed), omit ``--skip-flashed`` to proceed directly to flashing without performing MD5 checks in order to save time.
+
+Fast Reflashing
+^^^^^^^^^^^^^^^
+
+When repeatedly flashing similar firmware (e.g., during development), esptool can significantly speed up the flashing process by only rewriting changed flash sectors instead of the entire binary. This is called **fast reflashing** or **differential flashing**.
+
+To enable fast reflashing, use the ``--diff-with`` option to provide the previously flashed binary file(s) for comparison, which will tell esptool that ``old_app.bin`` was previously written to address ``0x10000``, and now it should be compared with the new, updated binary ``new_app.bin`` and flash only those sectors of ``new_app.bin`` which are different from ``old_app.bin``.:
+
+::
+
+    esptool write-flash 0x10000 new_app.bin --diff-with old_app.bin
+
+When multiple files are being flashed, provide a corresponding ``--diff-with`` file for each one (or use ``skip`` to disable fast reflashing for a specific file). The diff files are matched sequentially to the files being flashed - the first ``--diff-with`` file corresponds to the first file being flashed, the second to the second, and so on.
+
+.. note::
+
+    You can simplify this process by using a single Intel HEX file (which can be created with the :ref:`merge-bin <merge-bin>` command) for ``--diff-with``. HEX files are automatically split into multiple binary files, which are then matched sequentially to the files being flashed.
+
+The following example will fast reflash the changed sectors of ``bootloader.bin`` and ``assets.bin`` files, while flashing the ``app.bin`` by full erase and and re-flashing (notice the ``skip`` keyword being used as a diff pair for the ``app.bin`` file):
+
+::
+
+    esptool write-flash 0x1000 bootloader.bin 0x10000 app.bin 0x20000 assets.bin --diff-with old_boot.bin skip old_assets.bin
+
+.. note::
+
+    Because of the ``skip`` keyword, no file named ``skip`` can be used as a diff data source.
+
+The following example will fast reflash only ``bootloader.bin``, while fully flashing the ``app.bin`` and ``assets.bin`` (notice only one ``--diff-with`` file is provided):
+
+::
+
+    esptool write-flash 0x1000 bootloader.bin 0x10000 app.bin 0x20000 assets.bin --diff-with old_boot.bin
+
+How It Works
+""""""""""""
+
+1. Esptool compares the new binary with the previously flashed binary (the ``--diff-with`` file) on a sector-by-sector basis (4KB sectors). Esptool assumes the previous binary is still in flash.
+2. If there are changed sectors, only those sectors are rewritten. A post-flash MD5 check then verifies the result. If verification fails (e.g. the flash content didn't match the expected state, or some of the newly flashed data got corrupted), the whole file is reflashed automatically.
+3. If no sectors have changed, esptool checks whether the new binary really is in flash. If it is, flashing is skipped. If not, the whole file is flashed.
+
+This can dramatically reduce flashing time when only small portions of the firmware have changed, as only the modified 4KB sectors need to be erased and rewritten.
+
+When Fast Reflashing is Most Effective
+""""""""""""""""""""""""""""""""""""""
+
+Fast reflashing provides the greatest time savings when there are large blocks of unchanged data between the old and new binaries. This is particularly effective during development when using build systems that organize linker sections to minimize changes between builds.
+
+.. note::
+
+    The concept of organizing linker sections involves grouping code from **mutable libraries** (code that changes frequently, such as your application logic) separately from **immutable libraries** (code that rarely changes, such as framework libraries, bootloaders, or third-party dependencies) in the generated linker script. This creates large, continuous blocks of unchanged data in the output binary, which remain consistent even between application recompilations and can be skipped during flashing.
+
+    This is an advanced build system optimization technique. If your build system doesn't organize linker sections this way, fast reflashing will still work, but may provide less time savings if changes are scattered throughout the binary.
+
+Another scenario where fast reflashing is highly effective is when reflashing large asset files (e.g., images, fonts, or other binary data) that have changed only slightly.
+
+Trust Flash Content Mode
+""""""""""""""""""""""""
+
+With ``--diff-with`` alone, when no sectors have changed esptool still performs one MD5 read to confirm the new binary is in flash before skipping. For even faster reflashing in repeatable scenarios (e.g., when you are certain the flash contents have not been modified since the last time you flashed), you can use ``--trust-flash-content`` to skip that step: when no sectors have changed, esptool will skip writing without verifying that the binary is in flash.
+
+Only **unchanged** files (no sectors changed) are skipped without verification when using this option. For files that **are** written (changed sectors or full reflash), esptool always verifies the data after write and automatically reflashes the whole file if verification fails. The option requires ``--diff-with``.
+
+::
+
+    esptool write-flash 0x10000 new_app.bin --diff-with old_app.bin --trust-flash-content
+
+When there *are* changed sectors, behavior is the same as without ``--trust-flash-content``: only changed sectors are written, then a post-flash MD5 check runs. If that check fails, the whole file is reflashed automatically.
+
+.. warning::
+
+    ``--trust-flash-content`` assumes the flash contents have not been modified since the last time you flashed (e.g. no other flashing tool, manual change, or erase). If unchanged files were in fact modified in flash, they will not be verified and the device may have incorrect content for those files. Only use this option when you are certain the flash content matches the ``--diff-with`` file.
+
+If the flash content does differ from what ``--diff-with`` describes for a file that was written, the post-write MD5 check will fail. In that case, esptool automatically reflashes the whole file and verifies again, so the final flash content is correct. You will see a message like ``Verification failed after fast reflash (flash content did not match the expected data). Reflashing the whole image...``.
+
+Limitations
+"""""""""""
+
+Fast reflashing is not available in the following scenarios:
+
+.. list::
+
+    * When ``--erase-all`` is used (entire flash is erased anyway)
+    * When ``--encrypt`` or ``--encrypt-files`` is used (encrypted flashing)
+    * When Secure Download Mode is active
+    :esp8266: * On ESP8266 in ROM bootloader (active ``--no-stub``)
+
+In these cases, esptool will automatically fall back to full re-flashing.
+
+.. only:: esp32
 
     Bootloader Protection
     ^^^^^^^^^^^^^^^^^^^^^
 
-    Flashing into the bootloader region (``0x0`` -> ``0x8000``) is disabled by default if active `Secure Boot <https://docs.espressif.com/projects/esp-idf/en/latest/{IDF_TARGET_PATH_NAME}/security/secure-boot-v2.html>`_ is detected.
+    Flashing into the bootloader region (``0x0`` -> ``0x8000``) is disabled by default if active `Secure Boot V1 <https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/secure-boot-v1.html>`_ is detected.
+    This is because Secure Boot V1 stores the signing key digest in eFuse, making the bootloader irreplaceable without the original key.
     This is a safety measure to prevent accidentally overwriting the secure bootloader, which **can ultimately lead to bricking the device**.
+
+    `Secure Boot V2 <https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/secure-boot-v2.html>`_ (available on ESP32 revision 3 and later) and all newer chips use a standardized scheme where the private signing key remains outside the chip, allowing safe bootloader updates.
 
     This behavior can be overridden with the ``--force`` option. **Use this only at your own risk and only if you know what you are doing!**
 
@@ -364,6 +462,8 @@ The following commands are less commonly used, or only of interest to advanced u
     *  :ref:`read-flash-status`
     *  :ref:`write-flash-status`
     *  :ref:`read-flash-sfdp`
+    :esp32s31: *  :ref:`verify-sdc-certificate`
+    :esp32s31: *  :ref:`read-sdc-chip-info`
     :esp8266: *  :ref:`chip-id`
     :esp8266: *  :ref:`run`
     :not esp8266 and not esp32: *  :ref:`get-security-info`

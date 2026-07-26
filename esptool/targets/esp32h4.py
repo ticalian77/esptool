@@ -5,10 +5,10 @@
 
 import struct
 
-from .esp32c3 import ESP32C3ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
 from ..util import FatalError
+from .esp32c3 import ESP32C3ROM
 
 
 class ESP32H4ROM(ESP32C3ROM):
@@ -63,19 +63,22 @@ class ESP32H4ROM(ESP32C3ROM):
     EFUSE_FORCE_USE_KM_KEY_REG = EFUSE_BASE + 0x038
     EFUSE_FORCE_USE_KM_KEY_MASK = 0xF << 19
 
-    PURPOSE_VAL_XTS_AES128_KEY = 4
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG = EFUSE_BASE + 0x038
+    EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT = 19
+    FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY = 2
 
-    SUPPORTS_ENCRYPTED_FLASH = True
+    PURPOSE_VAL_XTS_AES256_KEY_1 = 2
+    PURPOSE_VAL_XTS_AES256_KEY_2 = 3
+    PURPOSE_VAL_XTS_AES128_KEY = 4
 
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
 
-    UARTDEV_BUF_NO = 0x4087F580  # Variable in ROM .bss which indicates the port in use
-    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 3  # The above var when USB-JTAG/Serial is used
+    DR_REG_TIMG_BASE = 0x60090000
+    RTC_CNTL_WDTCONFIG0_REG = DR_REG_TIMG_BASE + 0x48  # TIMG_WDTCONFIG0_REG
+    RTC_CNTL_WDTCONFIG1_REG = DR_REG_TIMG_BASE + 0x4C  # TIMG_WDTCONFIG1_REG
+    RTC_CNTL_WDTWPROTECT_REG = DR_REG_TIMG_BASE + 0x64  # TIMG_WDTWPROTECT_REG
 
     DR_REG_LP_WDT_BASE = 0x600B5400
-    RTC_CNTL_WDTCONFIG0_REG = DR_REG_LP_WDT_BASE + 0x0  # LP_WDT_RWDT_CONFIG0_REG
-    RTC_CNTL_WDTWPROTECT_REG = DR_REG_LP_WDT_BASE + 0x0018  # LP_WDT_RWDT_WPROTECT_REG
-
     RTC_CNTL_SWD_CONF_REG = DR_REG_LP_WDT_BASE + 0x001C  # LP_WDT_SWD_CONFIG_REG
     RTC_CNTL_SWD_AUTO_FEED_EN = 1 << 18
     RTC_CNTL_SWD_WPROTECT_REG = DR_REG_LP_WDT_BASE + 0x0020  # LP_WDT_SWD_WPROTECT_REG
@@ -86,7 +89,7 @@ class ESP32H4ROM(ESP32C3ROM):
     PCR_SYSCLK_XTAL_FREQ_S = 24
 
     FLASH_FREQUENCY = {
-        "48m": 0x0,
+        "48m": 0xF,
         "24m": 0x0,
         "16m": 0x1,
         "12m": 0x2,
@@ -94,29 +97,53 @@ class ESP32H4ROM(ESP32C3ROM):
 
     MEMORY_MAP = [
         [0x00000000, 0x00010000, "PADDING"],
-        [0x42800000, 0x43000000, "DROM"],
-        [0x40800000, 0x40880000, "DRAM"],
-        [0x40800000, 0x40880000, "BYTE_ACCESSIBLE"],
-        [0x4004AC00, 0x40050000, "DROM_MASK"],
-        [0x40000000, 0x4004AC00, "IROM_MASK"],
-        [0x42000000, 0x42800000, "IROM"],
-        [0x40800000, 0x40880000, "IRAM"],
+        [0x42000000, 0x44000000, "DROM"],
+        [0x40810000, 0x40860000, "DRAM"],
+        [0x40810000, 0x40860000, "BYTE_ACCESSIBLE"],
+        [0x40000000, 0x40050000, "DROM_MASK"],
+        [0x40000000, 0x40050000, "IROM_MASK"],
+        [0x42000000, 0x44000000, "IROM"],
+        [0x40810000, 0x40860000, "IRAM"],
         [0x50000000, 0x50004000, "RTC_IRAM"],
         [0x50000000, 0x50004000, "RTC_DRAM"],
-        [0x600FE000, 0x60100000, "MEM_INTERNAL2"],
+        [0x60000000, 0x60100000, "MEM_INTERNAL2"],
     ]
 
     UF2_FAMILY_ID = 0x9E0BAA8A
 
-    # not alloc yet, return 0
+    KEY_PURPOSES: dict[int, str] = {
+        0: "USER/EMPTY",
+        1: "ECDSA_KEY",  # ECDSA_KEY_P256 (NIST P-256)
+        2: "XTS_AES_256_KEY_FLASH_1",
+        3: "XTS_AES_256_KEY_FLASH_2",
+        4: "XTS_AES_128_KEY",
+        5: "HMAC_DOWN_ALL",
+        6: "HMAC_DOWN_JTAG",
+        7: "HMAC_DOWN_DIGITAL_SIGNATURE",
+        8: "HMAC_UP",
+        9: "SECURE_BOOT_DIGEST0",
+        10: "SECURE_BOOT_DIGEST1",
+        11: "SECURE_BOOT_DIGEST2",
+        12: "KM_INIT_KEY",
+        13: "XTS_AES_256_KEY_PSRAM_1",
+        14: "XTS_AES_256_KEY_PSRAM_2",
+        15: "XTS_AES_128_KEY_PSRAM",
+        16: "ECDSA_KEY_P192",
+        17: "ECDSA_KEY_P384_L",
+        18: "ECDSA_KEY_P384_H",
+    }
+
     def get_pkg_version(self):
-        return 0
+        num_word = 4
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 12) & 0x07
 
     def get_minor_chip_version(self):
-        return 0
+        num_word = 3
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 18) & 0x0F
 
     def get_major_chip_version(self):
-        return 0
+        num_word = 3
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 22) & 0x03
 
     def get_chip_description(self):
         chip_name = {
@@ -163,8 +190,10 @@ class ESP32H4ROM(ESP32C3ROM):
         )
 
     def get_key_block_purpose(self, key_block):
-        if key_block < 0 or key_block > 5:
-            raise FatalError("Valid key block numbers must be in range 0-5")
+        if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
+            raise FatalError(
+                f"Valid key block numbers must be in range 0-{self.EFUSE_MAX_KEY}"
+            )
 
         reg, shift = [
             (self.EFUSE_PURPOSE_KEY0_REG, self.EFUSE_PURPOSE_KEY0_SHIFT),
@@ -176,20 +205,43 @@ class ESP32H4ROM(ESP32C3ROM):
         ][key_block]
         return (self.read_reg(reg) >> shift) & 0x1F
 
-    def is_flash_encryption_key_valid(self):
-        # Need to see an AES-128 key
-        purposes = [self.get_key_block_purpose(b) for b in range(6)]
+    def uses_key_manager_for_flash_encryption(self):
+        return bool(
+            (
+                self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
+                >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
+            )
+            & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
+        )
 
-        return any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes)
+    def is_flash_encryption_key_valid(self):
+        # Need to see an AES-128 key or both AES-256 flash key halves.
+        purposes = [
+            self.get_key_block_purpose(b) for b in range(self.EFUSE_MAX_KEY + 1)
+        ]
+
+        if any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes):
+            return True
+
+        if any(p == self.PURPOSE_VAL_XTS_AES256_KEY_1 for p in purposes) and any(
+            p == self.PURPOSE_VAL_XTS_AES256_KEY_2 for p in purposes
+        ):
+            return True
+
+        return self.uses_key_manager_for_flash_encryption()
 
     def check_spi_connection(self, spi_connection):
         if not set(spi_connection).issubset(set(range(0, 40))):
             raise FatalError("SPI Pin numbers must be in the range 0-39.")
         if any([v for v in spi_connection if v in [13, 14]]):
-            log.warning(
+            log.warn(
                 "GPIO pins 13 and 14 are used by USB-Serial/JTAG, "
                 "consider using other pins for SPI flash connection."
             )
+
+    # Watchdog reset is not supported on ESP32-H4
+    def watchdog_reset(self):
+        ESPLoader.watchdog_reset(self)
 
 
 class ESP32H4StubLoader(StubMixin, ESP32H4ROM):

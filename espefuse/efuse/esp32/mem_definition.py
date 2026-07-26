@@ -6,6 +6,7 @@
 
 import copy
 import os
+from dataclasses import dataclass
 
 import yaml
 
@@ -17,6 +18,7 @@ from ..mem_definition_base import (
 )
 
 
+@dataclass(frozen=True)
 class EfuseDefineRegisters(EfuseRegistersBase):
     EFUSE_MEM_SIZE = 0x011C + 4
 
@@ -64,6 +66,10 @@ class EfuseDefineRegisters(EfuseRegistersBase):
 
     EFUSE_BLK0_RDATA5_REG = DR_REG_EFUSE_BASE + 0x014
     EFUSE_RD_CHIP_VER_REV2 = 1 << 20
+
+    ERRORS = [
+        EFUSE_REG_DEC_STATUS,
+    ]
 
 
 class EfuseDefineBlocks(EfuseBlocksBase):
@@ -150,27 +156,29 @@ class EfuseDefineFields(EfuseFieldsBase):
             elif efuse.category == "spi pad":
                 efuse.class_type = "spipin"
 
-        f = Field()
-        f.name = "WAFER_VERSION_MAJOR"
-        f.block = 0
-        f.bit_len = 3
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "wafer"
-        f.description = "calc WAFER VERSION MAJOR from CHIP_VER_REV1 and CHIP_VER_REV2 and apb_ctl_date (read only)"
-        self.CALC.append(f)
-
-        f = Field()
-        f.name = "PKG_VERSION"
-        f.block = 0
-        f.bit_len = 4
-        f.type = f"uint:{f.bit_len}"
-        f.category = "identity"
-        f.class_type = "pkg"
-        f.description = (
-            "calc Chip package = CHIP_PACKAGE_4BIT << 3 + CHIP_PACKAGE (read only)"
+        self.CALC.append(
+            Field(
+                name="WAFER_VERSION_MAJOR",
+                block=0,
+                bit_len=3,
+                type="uint",
+                category="identity",
+                class_type="wafer",
+                description="calc WAFER VERSION MAJOR from CHIP_VER_REV1 and CHIP_VER_REV2 and apb_ctl_date (read only)",
+            )
         )
-        self.CALC.append(f)
+
+        self.CALC.append(
+            Field(
+                name="PKG_VERSION",
+                block=0,
+                bit_len=4,
+                type="uint",
+                category="identity",
+                class_type="pkg",
+                description="calc Chip package = CHIP_PACKAGE_4BIT << 3 + CHIP_PACKAGE (read only)",
+            )
+        )
 
         for efuse in self.ALL_EFUSES:
             if efuse is not None:

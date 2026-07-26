@@ -6,10 +6,10 @@
 import struct
 from time import sleep
 
-from .esp32 import ESP32ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
 from ..util import FatalError, NotSupportedError
+from .esp32 import ESP32ROM
 
 
 class ESP32C3ROM(ESP32ROM):
@@ -69,21 +69,7 @@ class ESP32C3ROM(ESP32ROM):
 
     PURPOSE_VAL_XTS_AES128_KEY = 4
 
-    SUPPORTS_ENCRYPTED_FLASH = True
-
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
-
-    # Variable in ROM .bss which indicates the port in use
-    @property
-    def UARTDEV_BUF_NO(self):
-        """Variable .bss.UartDev.buff_uart_no in ROM .bss
-        which indicates the port in use.
-        """
-        BUF_UART_NO_OFFSET = 24
-        BSS_UART_DEV_ADDR = 0x3FCDF064 if self.get_chip_revision() < 101 else 0x3FCDF060
-        return BSS_UART_DEV_ADDR + BUF_UART_NO_OFFSET
-
-    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 3  # The above var when USB-JTAG/Serial is used
 
     RTCCNTL_BASE_REG = 0x60008000
     RTC_CNTL_SWD_CONF_REG = RTCCNTL_BASE_REG + 0x00AC
@@ -202,6 +188,10 @@ class ESP32C3ROM(ESP32ROM):
             & self.EFUSE_SECURE_BOOT_EN_MASK
         )
 
+    def get_secure_boot_v1_enabled(self):
+        # Secure Boot V1 is only supported on ESP32, not on ESP32-C3
+        return False
+
     def get_key_block_purpose(self, key_block):
         if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
             raise FatalError(
@@ -229,14 +219,6 @@ class ESP32C3ROM(ESP32ROM):
     def change_baud(self, baud):
         ESPLoader.change_baud(self, baud)
 
-    def uses_usb_jtag_serial(self):
-        """
-        Check the UARTDEV_BUF_NO register to see if USB-JTAG/Serial is being used
-        """
-        if self.secure_download_mode:
-            return False  # Can't detect USB-JTAG/Serial in secure download mode
-        return self.get_uart_no() == self.UARTDEV_BUF_NO_USB_JTAG_SERIAL
-
     def disable_watchdogs(self):
         # When USB-JTAG/Serial is used, the RTC WDT and SWD watchdog are not reset
         # and can then reset the board during flashing. Disable or autofeed them.
@@ -256,7 +238,8 @@ class ESP32C3ROM(ESP32ROM):
             self.write_reg(self.RTC_CNTL_SWD_WPROTECT_REG, 0)
 
     def _post_connect(self):
-        if not self.sync_stub_detected:  # Don't run if stub is reused
+        if not self.secure_download_mode and not self.sync_stub_detected:
+            # Don't run if stub is reused
             self.disable_watchdogs()
 
     def watchdog_reset(self):
@@ -273,7 +256,7 @@ class ESP32C3ROM(ESP32ROM):
         if not set(spi_connection).issubset(set(range(0, 22))):
             raise FatalError("SPI Pin numbers must be in the range 0-21.")
         if any([v for v in spi_connection if v in [18, 19]]):
-            log.warning(
+            log.warn(
                 "GPIO pins 18 and 19 are used by USB-Serial/JTAG, "
                 "consider using other pins for SPI flash connection."
             )

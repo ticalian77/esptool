@@ -11,8 +11,11 @@ Optional arguments:
     - ``summary`` - text format (default option).
     - ``json`` - json format. Usage ``--format json``.
     - ``value_only`` - only the value of the eFuse specified as an argument will be displayed. For more information, refer to the :ref:`Filtering eFuses <filtering-eFuses>` section.
+- ``--active`` - Show only those fields that are active (i.e., have at least one bit set, read or write protected, or have an encoding error).
 - ``--file`` - File to save the eFuse summary. Usage ``--file efuses.json``.
 - List of eFuses to filter. For more information, refer to the :ref:`Filtering eFuses <filtering-eFuses>` section.
+
+.. _text-format-summary:
 
 Text Format Summary
 -------------------
@@ -54,6 +57,12 @@ Json Format Summary
 
 The json representation of eFuses for the ESP32 chip is shown below.
 
+Each field includes ``raw_value``: a lowercase hexadecimal string of the fuse bits
+with a ``0x`` prefix. The format is the same for every field: non-``bytes`` fields
+are padded with leading zero bits to a nibble (4-bit) boundary; ``bytes`` fields
+use the same byte order as the ``value`` hex (see the :ref:`text format summary <text-format-summary>`),
+as a continuous digit string after the ``0x`` prefix (no spaces).
+
 .. code-block:: none
 
     > espefuse summary --format json
@@ -67,6 +76,7 @@ The json representation of eFuses for the ESP32 chip is shown below.
             "efuse_type": "bool",
             "name": "ABS_DONE_0",
             "pos": 4,
+            "raw_value": "0x0",
             "readable": true,
             "value": false,
             "word": 6,
@@ -80,6 +90,7 @@ The json representation of eFuses for the ESP32 chip is shown below.
             "efuse_type": "bytes:32",
             "name": "BLOCK1",
             "pos": 0,
+            "raw_value": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "readable": true,
             "value": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
             "word": 0,
@@ -89,11 +100,12 @@ The json representation of eFuses for the ESP32 chip is shown below.
         "CODING_SCHEME": {
             "bit_len": 2,
             "block": 0,
-            "category": "efuse",
+            "category": "config",
             "description": "Efuse variable block length scheme",
             "efuse_type": "uint:2",
             "name": "CODING_SCHEME",
             "pos": 0,
+            "raw_value": "0x0",
             "readable": true,
             "value": "NONE (BLK1-3 len=256 bits)",
             "word": 6,
@@ -135,6 +147,8 @@ The ``espefuse summary`` command supports filtering eFuses by name. The eFuses t
     = 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 R/W
 
 If ``--format value_only`` is specified, only the value of the eFuse specified as an argument will be displayed. Only one eFuse can be specified as an argument for this format. Example:
+
+When the eFuse table is large, finding specific set values can be time-consuming. Use the ``--active`` flag to display only active fields (those with at least one bit set, read or write protected, or has a coding error). This produces a shorter, more readable table.
 
 .. code-block:: none
 

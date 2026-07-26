@@ -6,10 +6,10 @@
 import struct
 from time import sleep
 
-from .esp32 import ESP32ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
 from ..util import FatalError, NotSupportedError
+from .esp32 import ESP32ROM
 
 
 class ESP32P4ROM(ESP32ROM):
@@ -63,8 +63,10 @@ class ESP32P4ROM(ESP32ROM):
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT_REG = EFUSE_RD_REG_BASE
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
 
-    EFUSE_SPI_BOOT_CRYPT_CNT_REG = EFUSE_BASE + 0x034
+    EFUSE_RD_REPEAT_DATA1_REG = EFUSE_BASE + 0x034
+    EFUSE_SPI_BOOT_CRYPT_CNT_REG = EFUSE_RD_REPEAT_DATA1_REG
     EFUSE_SPI_BOOT_CRYPT_CNT_MASK = 0x7 << 18
+    EFUSE_DOWNLOAD_MODE_XPD_ON_MASK = 0x1 << 16
 
     EFUSE_SECURE_BOOT_EN_REG = EFUSE_BASE + 0x038
     EFUSE_SECURE_BOOT_EN_MASK = 1 << 20
@@ -80,25 +82,19 @@ class ESP32P4ROM(ESP32ROM):
     RTC_CNTL_OPTION1_REG = 0x50110008
     RTC_CNTL_FORCE_DOWNLOAD_BOOT_MASK = 0x4  # Is download mode forced over USB?
 
-    SUPPORTS_ENCRYPTED_FLASH = True
-
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
 
-    @property
-    def UARTDEV_BUF_NO(self):
-        """Variable .bss.UartDev.buff_uart_no in ROM .bss
-        which indicates the port in use.
-        """
-        BUF_UART_NO_OFFSET = 24
-
-        BSS_UART_DEV_ADDR = 0x4FF3FEB0 if self.get_chip_revision() < 300 else 0x4FFBFEB0
-        return BSS_UART_DEV_ADDR + BUF_UART_NO_OFFSET
-
-    # The value from UARTDEV_BUF_NO when USB-OTG is used
-    UARTDEV_BUF_NO_USB_OTG = 5
-
-    # The value from UARTDEV_BUF_NO when USB-JTAG/Serial is used
-    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 6
+    # Flash power-on related registers and bits needed for ECO6
+    DR_REG_LPAON_BASE = 0x50110000
+    DR_REG_PMU_BASE = DR_REG_LPAON_BASE + 0x5000
+    DR_REG_LP_SYS_BASE = DR_REG_LPAON_BASE + 0x0
+    LP_SYSTEM_REG_ANA_XPD_PAD_GROUP_REG = DR_REG_LP_SYS_BASE + 0x10C
+    PMU_EXT_LDO_P0_0P1A_ANA_REG = DR_REG_PMU_BASE + 0x1BC
+    PMU_ANA_0P1A_EN_CUR_LIM_0 = 1 << 27
+    PMU_EXT_LDO_P0_0P1A_REG = DR_REG_PMU_BASE + 0x1B8
+    PMU_0P1A_TARGET0_0 = 0xFF << 23
+    PMU_0P1A_FORCE_TIEH_SEL_0 = 1 << 7
+    PMU_DATE_REG = DR_REG_PMU_BASE + 0x3FC
 
     MEMORY_MAP = [
         [0x00000000, 0x00010000, "PADDING"],
@@ -195,6 +191,10 @@ class ESP32P4ROM(ESP32ROM):
             & self.EFUSE_SECURE_BOOT_EN_MASK
         )
 
+    def get_secure_boot_v1_enabled(self):
+        # Secure Boot V1 is only supported on ESP32, not on ESP32-P4
+        return False
+
     def get_key_block_purpose(self, key_block):
         if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
             raise FatalError(
@@ -211,6 +211,15 @@ class ESP32P4ROM(ESP32ROM):
         ][key_block]
         return (self.read_reg(reg) >> shift) & 0xF
 
+    def uses_key_manager_for_flash_encryption(self):
+        return bool(
+            (
+                self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
+                >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
+            )
+            & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
+        )
+
     def is_flash_encryption_key_valid(self):
         # Need to see either an AES-128 key or two AES-256 keys
         purposes = [
@@ -225,10 +234,7 @@ class ESP32P4ROM(ESP32ROM):
         ):
             return True
 
-        return (
-            self.read_reg(self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_REG)
-            >> self.EFUSE_FORCE_USE_KEY_MANAGER_KEY_SHIFT
-        ) & self.FORCE_USE_KEY_MANAGER_VAL_XTS_AES_KEY
+        return self.uses_key_manager_for_flash_encryption()
 
     def change_baud(self, baud):
         ESPLoader.change_baud(self, baud)
@@ -236,24 +242,10 @@ class ESP32P4ROM(ESP32ROM):
     def _post_connect(self):
         if self.uses_usb_otg():
             self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-        if not self.sync_stub_detected:  # Don't run if stub is reused
-            self.disable_watchdogs()
-
-    def uses_usb_otg(self):
-        """
-        Check the UARTDEV_BUF_NO register to see if USB-OTG console is being used
-        """
-        if self.secure_download_mode:
-            return False  # can't detect native USB in secure download mode
-        return self.get_uart_no() == self.UARTDEV_BUF_NO_USB_OTG
-
-    def uses_usb_jtag_serial(self):
-        """
-        Check the UARTDEV_BUF_NO register to see if USB-JTAG/Serial is being used
-        """
-        if self.secure_download_mode:
-            return False  # can't detect USB-JTAG/Serial in secure download mode
-        return self.get_uart_no() == self.UARTDEV_BUF_NO_USB_JTAG_SERIAL
+        if not self.secure_download_mode:
+            if not self.sync_stub_detected:  # Don't run if stub is reused
+                self.disable_watchdogs()
+            self.power_on_flash()  # Needs to be powered on before attach_flash()
 
     def disable_watchdogs(self):
         # When USB-JTAG/Serial is used, the RTC WDT and SWD watchdog are not reset
@@ -277,7 +269,7 @@ class ESP32P4ROM(ESP32ROM):
         if not set(spi_connection).issubset(set(range(0, 55))):
             raise FatalError("SPI Pin numbers must be in the range 0-54.")
         if any([v for v in spi_connection if v in [24, 25]]):
-            log.warning(
+            log.warn(
                 "GPIO pins 24 and 25 are used by USB-Serial/JTAG, "
                 "consider using other pins for SPI flash connection."
             )
@@ -298,6 +290,73 @@ class ESP32P4ROM(ESP32ROM):
         else:
             ESPLoader.hard_reset(self)
 
+    def power_on_flash(self):
+        """Power on the flash chip by setting the appropriate regs."""
+        if self.secure_download_mode:
+            raise NotSupportedError(self, "Powering on flash in secure download mode")
+
+        revision = self.get_chip_revision()
+        # Flash defaults off on ECO6/ECO7 after the 1.8 V → 3.3 V default change
+        # (protects 1.8 V parts, board voltage must be set in eFuse). Other silicon
+        # revisions do not need this sequence.
+        if revision not in [301, 302]:
+            return
+
+        # On ECO7, also skip when DOWNLOAD_MODE_XPD_ON is programmed: ROM already
+        # asserts flash XPD in download mode, so esptool must not run this path.
+        if revision == 302 and (
+            self.read_reg(self.EFUSE_RD_REPEAT_DATA1_REG)
+            & self.EFUSE_DOWNLOAD_MODE_XPD_ON_MASK
+        ):
+            # ECO7 ROM bug: on a cold power-on, ROM can assert flash XPD (force
+            # the flash supply/pads on) and the first download session works.
+            # A subsequent entry into ROM download mode over USB–UART reset leaves
+            # the flash already powered, but ROM still runs the same “turn flash XPD on”
+            # path. That path is not safe to run twice while flash is already on,
+            # so the second attach/download can fail.
+            #
+            # Clear PMU_DATE_REG so the “flash force on” state from the power-up
+            # sequence is released before the loader proceeds to SPI flash attach.
+            self.write_reg(self.PMU_DATE_REG, 0)
+            return
+
+        # Power up pad group
+        self.write_reg(self.LP_SYSTEM_REG_ANA_XPD_PAD_GROUP_REG, 1)
+        sleep(0.01)
+        # Flash power up sequence
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_ANA_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_ANA_REG)
+            | self.PMU_ANA_0P1A_EN_CUR_LIM_0,
+        )
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_REG)
+            | self.PMU_0P1A_FORCE_TIEH_SEL_0,
+        )
+        self.write_reg(self.PMU_DATE_REG, self.read_reg(self.PMU_DATE_REG) | (3 << 0))
+        sleep(0.00005)
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_ANA_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_ANA_REG)
+            & ~self.PMU_ANA_0P1A_EN_CUR_LIM_0,
+        )
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_REG) & ~self.PMU_0P1A_TARGET0_0,
+        )
+        # Update eFuse voltage to PMU
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_REG) | 0x80,
+        )
+        self.write_reg(
+            self.PMU_EXT_LDO_P0_0P1A_REG,
+            self.read_reg(self.PMU_EXT_LDO_P0_0P1A_REG)
+            & ~self.PMU_0P1A_FORCE_TIEH_SEL_0,
+        )
+        sleep(0.0018)
+
 
 class ESP32P4StubLoader(StubMixin, ESP32P4ROM):
     """Stub loader for ESP32-P4, runs on top of ROM."""
@@ -310,7 +369,7 @@ class ESP32P4StubLoader(StubMixin, ESP32P4ROM):
 
     def stub_json_name(self):
         if self.get_chip_revision() < 300:
-            return "esp32p4rc1.json"
+            return "esp32p4-rev1.json"
         return "esp32p4.json"
 
 

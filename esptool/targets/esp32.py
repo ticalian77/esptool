@@ -138,7 +138,7 @@ class ESP32ROM(ESPLoader):
             # the contents will be readable and 0.
             # If the flash encryption is enabled it is expected to have a valid
             # non-zero key. We break out on first occurrence of non-zero value
-            key_word = [0] * 7
+            key_word = [0] * 8  # FE key consists of 8 registers/words.
             for i in range(len(key_word)):
                 key_word[i] = self.read_efuse(14 + i)
                 # key is non-zero so break & return
@@ -188,6 +188,13 @@ class ESP32ROM(ESPLoader):
         return efuses & self.EFUSE_RD_ABS_DONE_0_MASK or (
             rev >= 300 and efuses & self.EFUSE_RD_ABS_DONE_1_MASK
         )
+
+    def get_secure_boot_v1_enabled(self):
+        """
+        Returns True if Secure Boot V1 is enabled (ABS_DONE_0 eFuse set).
+        """
+        efuses = self.read_reg(self.EFUSE_RD_ABS_DONE_REG)
+        return bool(efuses & self.EFUSE_RD_ABS_DONE_0_MASK)
 
     def get_pkg_version(self):
         word3 = self.read_efuse(3)
@@ -320,15 +327,15 @@ class ESP32ROM(ESPLoader):
         return size
 
     def _get_efuse_flash_voltage(self) -> str | None:
+        # Same decision order as espefuse esp32 EfuseClass.summary()
         efuse = self.read_reg(self.EFUSE_VDD_SPI_REG)
-        # check efuse setting
-        if efuse & (self.VDD_SPI_FORCE | self.VDD_SPI_XPD | self.VDD_SPI_TIEH):
-            return "3.3V"
-        elif efuse & (self.VDD_SPI_FORCE | self.VDD_SPI_XPD):
-            return "1.8V"
-        elif efuse & self.VDD_SPI_FORCE:
+        if not (efuse & self.VDD_SPI_FORCE):
+            return None
+        if not (efuse & self.VDD_SPI_XPD):
             return "OFF"
-        return None
+        if not (efuse & self.VDD_SPI_TIEH):
+            return "1.8V"
+        return "3.3V"
 
     def _get_rtc_cntl_flash_voltage(self) -> str | None:
         reg = self.read_reg(self.RTC_CNTL_SDIO_CONF_REG)

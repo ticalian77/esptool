@@ -5,10 +5,10 @@
 
 import struct
 
-from .esp32c3 import ESP32C3ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
 from ..util import FatalError, NotSupportedError
+from .esp32c3 import ESP32C3ROM
 
 
 class ESP32C6ROM(ESP32C3ROM):
@@ -62,12 +62,7 @@ class ESP32C6ROM(ESP32C3ROM):
 
     PURPOSE_VAL_XTS_AES128_KEY = 4
 
-    SUPPORTS_ENCRYPTED_FLASH = True
-
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
-
-    UARTDEV_BUF_NO = 0x4087F580  # Variable in ROM .bss which indicates the port in use
-    UARTDEV_BUF_NO_USB_JTAG_SERIAL = 3  # The above var when USB-JTAG/Serial is used
 
     DR_REG_LP_WDT_BASE = 0x600B1C00
     RTC_CNTL_WDTCONFIG0_REG = DR_REG_LP_WDT_BASE + 0x0  # LP_WDT_RWDT_CONFIG0_REG
@@ -113,22 +108,41 @@ class ESP32C6ROM(ESP32C3ROM):
         num_word = 3
         return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 22) & 0x03
 
+    def get_flash_cap(self):
+        num_word = 4
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 0) & 0x07
+
     def get_chip_description(self):
-        chip_name = {
-            0: "ESP32-C6 (QFN40)",
-            1: "ESP32-C6FH4 (QFN32)",
-        }.get(self.get_pkg_version(), "Unknown ESP32-C6")
+        pkg_version = self.get_pkg_version()
+
+        chip_name = "Unknown ESP32-C6"
+        if pkg_version == 0:
+            chip_name = "ESP32-C6 (QFN40)"
+        elif pkg_version == 1:
+            # Both ESP32-C6FH4 and ESP32-C6FH8 have pkg_version 1
+            # so we need to distinguish them by flash_cap
+            flash_cap = self.get_flash_cap()
+            if flash_cap == 1:
+                chip_name = "ESP32-C6FH4 (QFN32)"
+            elif flash_cap == 2:
+                chip_name = "ESP32-C6FH8 (QFN32)"
         major_rev = self.get_major_chip_version()
         minor_rev = self.get_minor_chip_version()
         return f"{chip_name} (revision v{major_rev}.{minor_rev})"
 
     def get_chip_features(self):
+        flash_version = {
+            1: "Embedded Flash 4MB",
+            2: "Embedded Flash 8MB",
+        }.get(self.get_flash_cap(), "Unknown Embedded Flash")
+
         return [
             "Wi-Fi 6",
             "BT 5 (LE)",
             "IEEE802.15.4",
             "Single Core + LP Core",
             "160MHz",
+            flash_version,
         ]
 
     def get_crystal_freq(self):
@@ -186,7 +200,7 @@ class ESP32C6ROM(ESP32C3ROM):
         if not set(spi_connection).issubset(set(range(0, 31))):
             raise FatalError("SPI Pin numbers must be in the range 0-30.")
         if any([v for v in spi_connection if v in [12, 13]]):
-            log.warning(
+            log.warn(
                 "GPIO pins 12 and 13 are used by USB-Serial/JTAG, "
                 "consider using other pins for SPI flash connection."
             )
